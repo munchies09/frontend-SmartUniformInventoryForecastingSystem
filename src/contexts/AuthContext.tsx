@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 interface User {
   id?: string; // MongoDB _id (optional, for backward compatibility)
   sispaId: string; // Primary identifier (required)
-  memberId?: string; // Optional, for backward compatibility
   name: string;
   email: string;
   role: "admin" | "member";
@@ -15,6 +14,7 @@ interface User {
   matricNo?: string;
   phone?: string;
   profileImage?: string;
+  gender?: "Male" | "Female";
 }
 
 interface AuthContextType {

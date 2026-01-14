@@ -39,7 +39,7 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sispaId: sispaId.trim(), // Backend expects sispaId, not memberId
+          sispaId: sispaId.trim(), // Backend uses sispaId only
           password: password,
         }),
       });
@@ -57,11 +57,10 @@ export default function LoginPage() {
 
 
       // Store user data and redirect based on role
-      // Backend now returns: { success: true, user: { id, sispaId, memberId, name, email, role, batch, matricNumber, phoneNumber, profilePicture }, token }
+      // Backend returns: { success: true, user: { id, sispaId, name, email, role, batch, matricNumber, phoneNumber, profilePicture }, token }
       const userData = {
         id: data.user?.id || data.member?.id || "",
         sispaId: data.user?.sispaId || data.member?.sispaId || sispaId.trim(), // Primary identifier
-        memberId: data.user?.memberId || data.member?.memberId || "", // Optional, backward compatibility
         name: data.user?.name || data.member?.name || "",
         email: data.user?.email || data.member?.email || "",
         role: data.user?.role || data.member?.role || "member", // Default to member if not specified
@@ -85,9 +84,12 @@ export default function LoginPage() {
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-cover bg-center"
-      style={{ backgroundImage: "url('/background1.png')" }}
+      className="flex min-h-screen items-center justify-center bg-cover bg-center relative"
+      style={{ backgroundImage: "url('/background1.png')", backgroundPosition: "center center", backgroundRepeat: "no-repeat" }}
     >
+      {/* White overlay for light shade effect */}
+      <div className="absolute inset-0 bg-white/20 pointer-events-none"></div>
+      <div className="relative z-10">
       <div className="flex w-[900px] h-[500px] bg-white rounded-xl shadow-2xl overflow-hidden">
 
         {/* LEFT IMAGE */}
@@ -223,7 +225,7 @@ export default function LoginPage() {
           </div>
         </div>
       )}
-
+      </div>
     </div>
   );
 }

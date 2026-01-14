@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import Swal from "sweetalert2";
-import { PencilIcon } from "@heroicons/react/24/outline";
+import { PencilIcon, MagnifyingGlassIcon, ChartBarIcon, ArrowLeftIcon } from "@heroicons/react/24/outline";
 
 interface UniformNo3Data {
   clothNo3: string; // XS - 3XL
@@ -14,7 +14,7 @@ interface UniformNo3Data {
   accessories: {
     apulet: boolean;
     integrityBadge: boolean;
-    goldBadge: boolean;
+    shoulderBadge: boolean;
     celBar: boolean;
     beretLogoPin: boolean;
     beltNo3: boolean; // Only for boys
@@ -38,6 +38,18 @@ interface TShirtData {
   companyShirt: string; // XS - 3XL
 }
 
+interface UniformItem {
+  id: string;
+  name: string;
+  type: string;
+  category: string;
+  image: string;
+  size?: string;
+  status: "Available" | "Missing";
+  price?: number; // Price in RM (only for shirts, will be updated by admin)
+  sizeChart?: string; // URL to size chart image
+}
+
 export default function UniformPage() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -47,6 +59,30 @@ export default function UniformPage() {
   const [showUniformNo3Modal, setShowUniformNo3Modal] = useState(false);
   const [showUniformNo4Modal, setShowUniformNo4Modal] = useState(false);
   const [showTShirtModal, setShowTShirtModal] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sizeChartModal, setSizeChartModal] = useState<{ isOpen: boolean; itemName: string; sizeChartUrl: string }>({
+    isOpen: false,
+    itemName: "",
+    sizeChartUrl: "",
+  });
+  
+  // Shirt prices (will be updated by admin later via API)
+  // TODO: Fetch shirt prices from API endpoint (e.g., GET /api/inventory/shirt-prices or similar)
+  // For now, prices are null and will show "Not set" in the UI
+  const [shirtPrices, setShirtPrices] = useState<{
+    digitalShirt: number | null;
+    companyShirt: number | null;
+    innerApmShirt: number | null;
+  }>({
+    digitalShirt: null,
+    companyShirt: null,
+    innerApmShirt: null,
+  });
+
+  // Status tracking for items with sizes (independent of size - for "no planning" indication)
+  // Status can be "Available", "Missing", or "Not Available" regardless of size
+  const [itemStatus, setItemStatus] = useState<Record<string, "Available" | "Missing" | "Not Available">>({});
   
   const [formDataNo3, setFormDataNo3] = useState<UniformNo3Data>({
     clothNo3: "",
@@ -57,7 +93,7 @@ export default function UniformPage() {
     accessories: {
       apulet: false,
       integrityBadge: false,
-      goldBadge: false,
+      shoulderBadge: false,
       celBar: false,
       beretLogoPin: false,
       beltNo3: false,
@@ -104,8 +140,152 @@ export default function UniformPage() {
     "8 3/8",
   ];
 
+  // State to store size chart URLs (fetched from inventory)
+  const [sizeCharts, setSizeCharts] = useState<Record<string, string>>({});
+  
+  // State to store inventory items (for quantity checking and dynamic item list)
+  const [inventoryItems, setInventoryItems] = useState<any[]>([]);
+
+  // Helper function to get size chart URL for an item
+  // Priority: 1) Inventory API (admin-uploaded), 2) Local fallback images
+  const getSizeChartUrl = (category: string, type: string): string | undefined => {
+    const typeLower = (type || "").toLowerCase().trim();
+    const categoryLower = (category || "").toLowerCase().trim();
+    
+    // FIRST: Check if we have a size chart from inventory API (admin-uploaded)
+    // This allows admin-uploaded size charts to override local images
+    const key = `${category}-${type}`;
+    if (sizeCharts[key] && sizeCharts[key].trim() !== "") {
+      return sizeCharts[key];
+    }
+    
+    // SECOND: Fallback to local images for specific items
+    // CRITICAL: For Uniform No 3 Male/Female, always use local images to ensure correct mapping
+    // Check for "female" FIRST before "male" to avoid false matches
+    if (typeLower === "uniform no 3 female" || 
+        (typeLower.includes("uniform no 3") && typeLower.includes("female")) || 
+        typeLower === "pants no 3" ||
+        typeLower.includes("pants no 3") ||
+        (typeLower.includes("pants") && typeLower.includes("no 3") && !typeLower.includes("male"))) {
+      return "/NO3_FEMALE_SIZECHART.png";
+    }
+    if (typeLower === "uniform no 3 male" || 
+        (typeLower.includes("uniform no 3") && typeLower.includes("male")) ||
+        typeLower === "cloth no 3" ||
+        (typeLower.includes("cloth no 3") && !typeLower.includes("female"))) {
+      return "/NO3_MALE_SIZECHART.png";
+    }
+    
+    // Other items - local fallback
+    if (typeLower === "pvc shoes" || typeLower.includes("pvc shoes")) {
+      return "/SHOES_SIZECHART.webp";
+    }
+    if (typeLower === "boot" || typeLower.includes("boot")) {
+      return "/SHOES_SIZECHART.webp";
+    }
+    if (typeLower === "beret" || typeLower.includes("beret")) {
+      return "/BERET_SIZECHART.webp";
+    }
+    if (typeLower === "uniform no 4" || (typeLower.includes("uniform no 4") && !typeLower.includes("boot"))) {
+      return "/NO4_SIZECHART.png";
+    }
+    // All shirt types use the same size chart (local fallback)
+    if (typeLower === "digital shirt" || typeLower.includes("digital shirt") ||
+        typeLower === "company shirt" || typeLower.includes("company shirt") ||
+        typeLower === "inner apm shirt" || typeLower.includes("inner apm shirt")) {
+      return "/SHIRT_SIZECHART.jpg";
+    }
+    
+    return undefined;
+  };
+  
+  // Helper function to get inventory quantity for an item
+  const getInventoryQuantity = (category: string, type: string, size: string | null): number => {
+    // Normalize size (remove "UK " prefix if present for matching)
+    const normalizeSize = (s: string | null): string | null => {
+      if (!s) return null;
+      return s.replace(/^UK\s*/i, "").trim() || null;
+    };
+    
+    const normalizedSize = normalizeSize(size);
+    
+    // Find matching inventory item
+    // Match by category, type, and size (normalized)
+    const item = inventoryItems.find(inv => {
+      const invCategory = inv.category?.toLowerCase() || "";
+      const invType = inv.type?.toLowerCase() || "";
+      const invSize = normalizeSize(inv.size);
+      
+      const matchCategory = invCategory === category.toLowerCase();
+      const matchType = invType === type.toLowerCase();
+      const matchSize = (invSize === normalizedSize) || (invSize === null && normalizedSize === null);
+      
+      return matchCategory && matchType && matchSize;
+    });
+    
+    return item?.quantity ?? 0;
+  };
+
+  // Fetch inventory items and size charts from inventory API
+  useEffect(() => {
+    const fetchInventory = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) return;
+
+        // Fetch inventory to get items, size chart URLs, and quantities
+        const res = await fetch('http://localhost:5000/api/inventory', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.inventory) {
+            // Store all inventory items
+            setInventoryItems(data.inventory || []);
+            
+            // Group by category-type and get size chart URL
+            const chartMap: Record<string, string> = {};
+            data.inventory.forEach((item: any) => {
+              if (item.sizeChart) {
+                const key = `${item.category}-${item.type}`;
+                if (!chartMap[key]) {
+                  chartMap[key] = item.sizeChart;
+                }
+              }
+            });
+            setSizeCharts(chartMap);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching inventory:", error);
+        // Silently fail - inventory is optional for backward compatibility
+      }
+    };
+
+    if (user) {
+      fetchInventory();
+    }
+  }, [user]);
+
   useEffect(() => {
     fetchUniform();
+    // Load shirt prices from localStorage (set by admin)
+    const savedPrices = localStorage.getItem("shirtPrices");
+    if (savedPrices) {
+      try {
+        const prices = JSON.parse(savedPrices);
+        setShirtPrices({
+          digitalShirt: prices.digitalShirt || null,
+          companyShirt: prices.companyShirt || null,
+          innerApmShirt: prices.innerApmShirt || null,
+        });
+      } catch (error) {
+        console.error("Error loading shirt prices:", error);
+      }
+    }
   }, [user]);
 
   const fetchUniform = async () => {
@@ -127,9 +307,29 @@ export default function UniformPage() {
       let data;
       
       if (contentType && contentType.includes("application/json")) {
+        try {
         data = await res.json();
+        } catch (parseError) {
+          console.error("JSON parse error:", parseError, "Status:", res.status);
+          setLoading(false);
+          return;
+        }
       } else {
         console.error("Non-JSON response received");
+        setLoading(false);
+        return;
+      }
+      
+      // Check HTTP status first
+      if (!res.ok) {
+        // 404 means no uniform data exists - this is a valid state, not an error
+        if (res.status === 404) {
+          // Silently handle - no data exists, state will remain empty
+          setLoading(false);
+          return;
+        }
+        // For other errors, log but don't show alert
+        console.error("HTTP Error:", res.status, data);
         setLoading(false);
         return;
       }
@@ -139,6 +339,18 @@ export default function UniformPage() {
         const uniformNo3Data = parseUniformNo3FromItems(items);
         const uniformNo4Data = parseUniformNo4FromItems(items);
         const tShirtData = parseTShirtFromItems(items);
+        
+        // Initialize itemStatus from API data (for items with status field)
+        const initialStatus: Record<string, "Available" | "Missing" | "Not Available"> = {};
+        items.forEach((item: any) => {
+          if (item.status) {
+            const category = item.category || "";
+            const type = item.type || "";
+            const statusKey = `${category}-${type}`;
+            initialStatus[statusKey] = item.status;
+          }
+        });
+        setItemStatus(initialStatus);
         
         if (uniformNo3Data) {
           setUniformNo3(uniformNo3Data);
@@ -163,7 +375,7 @@ export default function UniformPage() {
       accessories: {
         apulet: false,
         integrityBadge: false,
-        goldBadge: false,
+        shoulderBadge: false,
         celBar: false,
         beretLogoPin: false,
         beltNo3: false,
@@ -175,18 +387,44 @@ export default function UniformPage() {
       const type = item.type?.toLowerCase() || "";
       const size = item.size || "";
 
-      if (category === "uniform no 3") {
-        if (type === "cloth no 3") data.clothNo3 = size;
-        if (type === "pants no 3") data.pantsNo3 = size;
-        if (type === "pvc shoes") data.pvcShoes = size.replace("UK ", "");
-        if (type === "beret") data.beret = size;
-        if (type === "nametag") data.nametag = item.notes || "";
-        if (type === "apulet" || type === "aplet") data.accessories!.apulet = true;
-        if (type === "integrity badge") data.accessories!.integrityBadge = true;
-        if (type === "gold badge") data.accessories!.goldBadge = true;
-        if (type === "cel bar") data.accessories!.celBar = true;
-        if (type === "beret logo pin") data.accessories!.beretLogoPin = true;
-        if (type === "belt no 3") data.accessories!.beltNo3 = true;
+      // Handle both "Uniform No 3" and "Accessories No 3" categories for backward compatibility
+      if (category === "uniform no 3" || category === "accessories no 3") {
+        // Main items only in "Uniform No 3" category
+        if (category === "uniform no 3") {
+          // Handle both old and new type names for backward compatibility
+          // Supports migration: "Cloth No 3" → "Uniform No 3 Male", "Pants No 3" → "Uniform No 3 Female"
+          if (type === "cloth no 3" || type === "uniform no 3 male" || type.includes("uniform no 3") && type.includes("male")) data.clothNo3 = size.replace("UK ", "");
+          if (type === "pants no 3" || type === "uniform no 3 female" || type.includes("uniform no 3") && type.includes("female")) data.pantsNo3 = size.replace("UK ", "");
+          if (type === "pvc shoes") data.pvcShoes = size.replace("UK ", "");
+          if (type === "beret") data.beret = size;
+        }
+        
+        // Accessories can be in either "Uniform No 3" (old) or "Accessories No 3" (new) category
+        // CRITICAL: Only parse nametag if it's "Nametag No 3" or "Name Tag No 3" (not No 4)
+        if ((type === "nametag" || type.includes("nametag no 3") || type.includes("name tag no 3")) && 
+            !type.includes("no 4")) {
+          data.nametag = item.notes || "";
+        }
+        // CRITICAL: Set accessory booleans based on status, not just existence
+        // If status is "Available", set to true; if "Missing" or "Not Available", set to false
+        if (type === "apulet" || type === "aplet") {
+          data.accessories!.apulet = item.status === "Available";
+        }
+        if (type === "integrity badge") {
+          data.accessories!.integrityBadge = item.status === "Available";
+        }
+        if (type === "shoulder badge") {
+          data.accessories!.shoulderBadge = item.status === "Available";
+        }
+        if (type === "cel bar") {
+          data.accessories!.celBar = item.status === "Available";
+        }
+        if (type === "beret logo pin") {
+          data.accessories!.beretLogoPin = item.status === "Available";
+        }
+        if (type === "belt no 3") {
+          data.accessories!.beltNo3 = item.status === "Available";
+        }
       }
     });
 
@@ -209,13 +447,36 @@ export default function UniformPage() {
       const type = item.type?.toLowerCase() || "";
       const size = item.size || "";
 
-      if (category === "uniform no 4") {
-        if (type === "cloth no 4") data.clothNo4 = size;
-        if (type === "pants no 4") data.pantsNo4 = size;
-        if (type === "boot") data.boot = size.replace("UK ", "");
-        if (type === "nametag") data.nametag = item.notes || "";
-        if (type === "apm tag") data.accessories!.apmTag = true;
-        if (type === "belt no 4") data.accessories!.beltNo4 = true;
+      // Handle both "Uniform No 4" and "Accessories No 4" categories for backward compatibility
+      if (category === "uniform no 4" || category === "accessories no 4") {
+        // Main items only in "Uniform No 4" category
+        if (category === "uniform no 4") {
+          // Handle both old and new type names for backward compatibility
+          // "Cloth No 4", "Pants No 4", and "Uniform No 4" all map to the same size
+          // Since they come as a pair, use the same size for both fields
+          if (type === "cloth no 4" || type === "pants no 4" || type === "uniform no 4" || 
+              (type.includes("uniform no 4") && !type.includes("accessories"))) {
+            // Set both clothNo4 and pantsNo4 to the same value since they come as a pair
+            data.clothNo4 = size.replace("UK ", "");
+            data.pantsNo4 = size.replace("UK ", "");
+          }
+          if (type === "boot") data.boot = size.replace("UK ", "");
+        }
+        
+        // Accessories can be in either "Uniform No 4" (old) or "Accessories No 4" (new) category
+        // CRITICAL: Only parse nametag if it's "Nametag No 4" or "Name Tag No 4" (not No 3)
+        if ((type === "nametag" || type.includes("nametag no 4") || type.includes("name tag no 4")) && 
+            !type.includes("no 3")) {
+          data.nametag = item.notes || "";
+        }
+        // CRITICAL: Set accessory booleans based on status, not just existence
+        // If status is "Available", set to true; if "Missing" or "Not Available", set to false
+        if (type === "apm tag") {
+          data.accessories!.apmTag = item.status === "Available";
+        }
+        if (type === "belt no 4") {
+          data.accessories!.beltNo4 = item.status === "Available";
+        }
       }
     });
 
@@ -233,7 +494,8 @@ export default function UniformPage() {
       const type = item.type?.toLowerCase() || "";
       const size = item.size || "";
 
-      if (category === "t-shirt" || category === "tshirt") {
+      // Handle both "T-Shirt" (old) and "Shirt" (new) categories for backward compatibility
+      if (category === "t-shirt" || category === "tshirt" || category === "shirt") {
         if (type === "digital shirt") data.digitalShirt = size;
         if (type === "inner apm shirt") data.innerApmShirt = size;
         if (type === "company shirt") data.companyShirt = size;
@@ -250,58 +512,60 @@ export default function UniformPage() {
   const convertNo3ToBackendItems = (data: UniformNo3Data): any[] => {
     const items: any[] = [];
     if (data.clothNo3) {
-      items.push({ category: "Uniform No 3", type: "Cloth No 3", size: data.clothNo3, quantity: 1 });
+      items.push({ category: "Uniform No 3", type: "Uniform No 3 Male", size: data.clothNo3, quantity: 1 });
     }
     if (data.pantsNo3) {
-      items.push({ category: "Uniform No 3", type: "Pants No 3", size: data.pantsNo3, quantity: 1 });
+      items.push({ category: "Uniform No 3", type: "Uniform No 3 Female", size: data.pantsNo3, quantity: 1 });
     }
     if (data.pvcShoes) {
-      items.push({ category: "Uniform No 3", type: "PVC Shoes", size: `UK ${data.pvcShoes}`, quantity: 1 });
+      items.push({ category: "Uniform No 3", type: "PVC Shoes", size: `${data.pvcShoes}`, quantity: 1 });
     }
     if (data.beret) {
       items.push({ category: "Uniform No 3", type: "Beret", size: data.beret, quantity: 1 });
     }
     if (data.nametag) {
-      items.push({ category: "Uniform No 3", type: "Nametag", size: "N/A", quantity: 1, notes: data.nametag });
+      items.push({ category: "Accessories No 3", type: "Nametag No 3", size: null, quantity: 1, notes: data.nametag });
     }
-    if (data.accessories.apulet) items.push({ category: "Uniform No 3", type: "Apulet", size: "N/A", quantity: 1 });
-    if (data.accessories.integrityBadge) items.push({ category: "Uniform No 3", type: "Integrity Badge", size: "N/A", quantity: 1 });
-    if (data.accessories.goldBadge) items.push({ category: "Uniform No 3", type: "Gold Badge", size: "N/A", quantity: 1 });
-    if (data.accessories.celBar) items.push({ category: "Uniform No 3", type: "Cel Bar", size: "N/A", quantity: 1 });
-    if (data.accessories.beretLogoPin) items.push({ category: "Uniform No 3", type: "Beret Logo Pin", size: "N/A", quantity: 1 });
-    if (data.accessories.beltNo3) items.push({ category: "Uniform No 3", type: "Belt No 3", size: "N/A", quantity: 1 });
+    // Accessories use null for size (not empty string)
+    if (data.accessories.apulet) items.push({ category: "Accessories No 3", type: "Apulet", size: null, quantity: 1 });
+    if (data.accessories.integrityBadge) items.push({ category: "Accessories No 3", type: "Integrity Badge", size: null, quantity: 1 });
+    if (data.accessories.shoulderBadge) items.push({ category: "Accessories No 3", type: "Shoulder Badge", size: null, quantity: 1 });
+    if (data.accessories.celBar) items.push({ category: "Accessories No 3", type: "Cel Bar", size: null, quantity: 1 });
+    if (data.accessories.beretLogoPin) items.push({ category: "Accessories No 3", type: "Beret Logo Pin", size: null, quantity: 1 });
+    if (data.accessories.beltNo3) items.push({ category: "Accessories No 3", type: "Belt No 3", size: null, quantity: 1 });
     return items;
   };
 
   const convertNo4ToBackendItems = (data: UniformNo4Data): any[] => {
     const items: any[] = [];
-    if (data.clothNo4) {
-      items.push({ category: "Uniform No 4", type: "Cloth No 4", size: data.clothNo4, quantity: 1 });
-    }
-    if (data.pantsNo4) {
-      items.push({ category: "Uniform No 4", type: "Pants No 4", size: data.pantsNo4, quantity: 1 });
+    // Merged: "Cloth No 4" and "Pants No 4" are now a single "Uniform No 4" type
+    // Use clothNo4 if available, otherwise use pantsNo4 (they should be the same since they come as a pair)
+    const uniformNo4Size = data.clothNo4 || data.pantsNo4;
+    if (uniformNo4Size) {
+      items.push({ category: "Uniform No 4", type: "Uniform No 4", size: uniformNo4Size, quantity: 1 });
     }
     if (data.boot) {
-      items.push({ category: "Uniform No 4", type: "Boot", size: `UK ${data.boot}`, quantity: 1 });
+      items.push({ category: "Uniform No 4", type: "Boot", size: `${data.boot}`, quantity: 1 });
     }
     if (data.nametag) {
-      items.push({ category: "Uniform No 4", type: "Nametag", size: "N/A", quantity: 1, notes: data.nametag });
+      items.push({ category: "Accessories No 4", type: "Nametag No 4", size: null, quantity: 1, notes: data.nametag });
     }
-    if (data.accessories.apmTag) items.push({ category: "Uniform No 4", type: "APM Tag", size: "N/A", quantity: 1 });
-    if (data.accessories.beltNo4) items.push({ category: "Uniform No 4", type: "Belt No 4", size: "N/A", quantity: 1 });
+    // Accessories use null for size (not empty string)
+    if (data.accessories.apmTag) items.push({ category: "Accessories No 4", type: "APM Tag", size: null, quantity: 1 });
+    if (data.accessories.beltNo4) items.push({ category: "Accessories No 4", type: "Belt No 4", size: null, quantity: 1 });
     return items;
   };
 
   const convertTShirtToBackendItems = (data: TShirtData): any[] => {
     const items: any[] = [];
     if (data.digitalShirt) {
-      items.push({ category: "T-Shirt", type: "Digital Shirt", size: data.digitalShirt, quantity: 1 });
+      items.push({ category: "Shirt", type: "Digital Shirt", size: data.digitalShirt, quantity: 1 });
     }
     if (data.innerApmShirt) {
-      items.push({ category: "T-Shirt", type: "Inner APM Shirt", size: data.innerApmShirt, quantity: 1 });
+      items.push({ category: "Shirt", type: "Inner APM Shirt", size: data.innerApmShirt, quantity: 1 });
     }
     if (data.companyShirt) {
-      items.push({ category: "T-Shirt", type: "Company Shirt", size: data.companyShirt, quantity: 1 });
+      items.push({ category: "Shirt", type: "Company Shirt", size: data.companyShirt, quantity: 1 });
     }
     return items;
   };
@@ -311,7 +575,7 @@ export default function UniformPage() {
     itemsToSend: any[],
     uniformType: string,
     hasExisting: boolean,
-    categoryToUpdate?: string // Category being updated (e.g., "Uniform No 3", "Uniform No 4", "T-Shirt")
+    categoryToUpdate?: string // Category being updated (e.g., "Uniform No 3", "Uniform No 4", "Shirt", "Accessories No 3", "Accessories No 4")
   ) => {
     if (!user?.sispaId || user.sispaId.trim() === '') {
       Swal.fire({
@@ -337,8 +601,47 @@ export default function UniformPage() {
       const token = localStorage.getItem("token");
       const url = 'http://localhost:5000/api/members/uniform';
 
+      // Use new 5-category structure directly - no normalization
+      // Backend must support: "Uniform No 3", "Uniform No 4", "Accessories No 3", "Accessories No 4", "Shirt"
+      // Ensure sizes are properly formatted: empty string for accessories, actual size for main items
+      const formattedItemsToSend = itemsToSend.map(item => {
+        // Define main items that always have sizes (NOT accessories)
+        const mainItemTypes = [
+          "Uniform No 3 Male", "Uniform No 3 Female", "Uniform No 4",
+          "PVC Shoes", "Beret", "Boot",
+          "Digital Shirt", "Company Shirt", "Inner APM Shirt"
+        ];
+        const isMainItem = mainItemTypes.some(type => 
+          item.type?.toLowerCase().includes(type.toLowerCase())
+        );
+        
+        // For main items, preserve the size (never convert to empty string)
+        // For accessories, use null (backend might expect null instead of empty string)
+        let normalizedSize = item.size;
+        if (isMainItem) {
+          // Main items must have a size - keep it as is, or use the actual value
+          normalizedSize = item.size || "";
+          // Ensure main items have a valid size, not empty
+          if (!normalizedSize || normalizedSize.trim() === "") {
+            console.warn(`Main item ${item.type} has empty size, this might cause issues`);
+          }
+        } else {
+          // Accessories: Use null for database compatibility
+          // Empty string might cause issues with database null constraints
+          normalizedSize = (!item.size || item.size === "N/A" || item.size === "" || item.size === null) ? null : item.size;
+        }
+        
+        return {
+          ...item,
+          category: item.category,
+          size: normalizedSize,
+          // Preserve status field if provided (backend now supports and saves it)
+          status: item.status || undefined,
+        };
+      });
+
       // If updating (PUT), we need to merge with existing items from other categories
-      let finalItemsToSend = itemsToSend;
+      let finalItemsToSend = formattedItemsToSend;
       
       if (hasExisting && categoryToUpdate) {
         // Fetch existing uniform data first
@@ -355,14 +658,43 @@ export default function UniformPage() {
               const existingItems = existingData.uniform.items || [];
               
               // Filter out items from the category being updated
+              // Use direct category matching with new 5-category structure
+              const updateCategoryLower = categoryToUpdate.toLowerCase();
               const otherCategoryItems = existingItems.filter((item: any) => {
                 const itemCategory = item.category?.toLowerCase() || "";
-                const updateCategory = categoryToUpdate.toLowerCase();
-                return itemCategory !== updateCategory;
+                // Direct category match - exclude items from the category being updated
+                if (itemCategory === updateCategoryLower) {
+                  return false;
+                }
+                
+                // Also handle backward compatibility: if backend returns old category names,
+                // we need to map them to new categories for filtering
+                // If updating "Accessories No 3", also exclude accessories from "Uniform No 3"
+                if (updateCategoryLower === "accessories no 3" && itemCategory === "uniform no 3") {
+                  const typeLower = item.type?.toLowerCase() || "";
+                  const accessoryTypes = ["apulet", "integrity badge", "shoulder badge", "cel bar", "beret logo pin", "belt no 3", "nametag"];
+                  if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                    return false; // Exclude this accessory item
+                  }
+                }
+                // If updating "Accessories No 4", also exclude accessories from "Uniform No 4"
+                if (updateCategoryLower === "accessories no 4" && itemCategory === "uniform no 4") {
+                  const typeLower = item.type?.toLowerCase() || "";
+                  const accessoryTypes = ["apm tag", "belt no 4", "nametag"];
+                  if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                    return false; // Exclude this accessory item
+                  }
+                }
+                // If updating "Shirt", also exclude items from "T-Shirt" (backward compatibility)
+                if (updateCategoryLower === "shirt" && (itemCategory === "t-shirt" || itemCategory === "tshirt")) {
+                  return false;
+                }
+                
+                return true; // Keep items from other categories
               });
               
               // Merge: keep items from other categories + add new items from this category
-              finalItemsToSend = [...otherCategoryItems, ...itemsToSend];
+              finalItemsToSend = [...otherCategoryItems, ...formattedItemsToSend];
               
               console.log(`Merging uniforms: Keeping ${otherCategoryItems.length} items from other categories, adding ${itemsToSend.length} items for ${categoryToUpdate}`);
             }
@@ -377,6 +709,18 @@ export default function UniformPage() {
       // Use POST only when there's no existing data at all
       const method = hasExisting ? "PUT" : "POST";
 
+      console.log("Sending request to:", url);
+      console.log("Method:", method);
+      console.log("Items to send:", JSON.stringify(finalItemsToSend, null, 2));
+      // Debug: Check if Beret is being sent correctly
+      const beretItems = finalItemsToSend.filter((item: any) => item.type?.toLowerCase().includes("beret"));
+      if (beretItems.length > 0) {
+        console.log("Beret items being sent:", beretItems);
+        beretItems.forEach((item: any) => {
+          console.log(`Beret item - Category: "${item.category}", Type: "${item.type}", Size: "${item.size}"`);
+        });
+      }
+      
       const res = await fetch(url, {
         method,
         headers: {
@@ -385,6 +729,8 @@ export default function UniformPage() {
         },
         body: JSON.stringify({ items: finalItemsToSend }),
       });
+      
+      console.log("Response status:", res.status, res.statusText);
 
       const contentType = res.headers.get("content-type");
       let data;
@@ -392,17 +738,22 @@ export default function UniformPage() {
       if (contentType && contentType.includes("application/json")) {
         try {
           data = await res.json();
+          console.log("Response data:", JSON.stringify(data, null, 2));
         } catch (parseError) {
+          console.error("Failed to parse JSON response:", parseError);
+          const text = await res.text();
+          console.error("Raw response text:", text);
           Swal.fire({
             icon: "error",
             title: "Server Error",
-            text: `Invalid JSON response: ${res.status} ${res.statusText}`,
+            text: `Invalid JSON response: ${res.status} ${res.statusText}. Response: ${text.substring(0, 200)}`,
             confirmButtonColor: "#1d4ed8",
           });
           return;
         }
       } else {
         const text = await res.text();
+        console.error("Non-JSON response:", text);
         Swal.fire({
           icon: "error",
           title: "Server Error",
@@ -412,7 +763,35 @@ export default function UniformPage() {
         return;
       }
 
+      // Check HTTP status first (handles 400, 401, 403, 500, etc.)
+      if (!res.ok) {
+        console.error("HTTP Error:", res.status);
+        console.error("Error response data:", JSON.stringify(data, null, 2));
+        console.error("Error details:", data);
+        
+        // Extract more detailed error information
+        const errorMessage = data?.message || data?.error || data?.details || `Server returned error: ${res.statusText}`;
+        const errorStack = data?.stack || "";
+        
+        Swal.fire({
+          icon: "error",
+          title: `Error ${res.status}`,
+          html: `
+            <div style="text-align: left;">
+              <p><strong>${errorMessage}</strong></p>
+              ${errorStack ? `<details style="margin-top: 10px;"><summary style="cursor: pointer; color: #666;">Technical Details</summary><pre style="font-size: 10px; overflow: auto; max-height: 200px;">${errorStack}</pre></details>` : ''}
+            </div>
+          `,
+          confirmButtonColor: "#1d4ed8",
+          width: '600px',
+        });
+        return false;
+      }
+
       if (data.success) {
+        // Note: Inventory deduction is handled by the backend in /api/members/uniform endpoint
+        // No need to call /api/inventory/deduct separately
+
         await Swal.fire({
           icon: "success",
           title: hasExisting ? "Uniform Updated!" : "Uniform Added!",
@@ -474,322 +853,1813 @@ export default function UniformPage() {
     }
   };
 
+  // Helper function to get image path for an item type
+  // Maps item types to their corresponding image files in public folder
+  const getItemImagePath = (itemType: string): string => {
+    const typeLower = itemType.toLowerCase().trim();
+    
+    // Map item types to image filenames (matching files in public folder)
+    const imageMap: Record<string, string> = {
+      // Uniform No 3 items
+      "nametag no 3": "/nametagno3.png",
+      "nametagno3": "/nametagno3.png",
+      "nametag": "/nametagno3.png", // Default nametag for No 3
+      "pvc shoes": "/pvcshoes.png",
+      "pvcshoes": "/pvcshoes.png",
+      "beret": "/beret.jpg",
+      "beret logo pin": "/beretlogopin.jpg",
+      "beretlogopin": "/beretlogopin.jpg",
+      
+      // Uniform No 4 items
+      "boot": "/boot.jpg",
+      "nametag no 4": "/nametagno4.jpg",
+      "nametagno4": "/nametagno4.jpg",
+      
+      // Accessories No 3
+      "belt no 3": "/beltno3.jpg",
+      "beltno3": "/beltno3.jpg",
+      "cel bar": "/celbar.jpg",
+      "celbar": "/celbar.jpg",
+      "shoulder badge": "/shoulderbadge.png",
+      "shoulderbadge": "/shoulderbadge.png",
+      "integrity badge": "/integritybadge.jpg",
+      "integritybadge": "/integritybadge.jpg",
+      "apulet": "/apulet.jpg",
+      
+      // Accessories No 4
+      "belt no 4": "/beltno4.png",
+      "beltno4": "/beltno4.png",
+      "apm tag": "/apmtag.jpg",
+      "apmtag": "/apmtag.jpg",
+      
+      // Shirt items (if needed)
+      "digital shirt": "/digital.png",
+      "company shirt": "/company.png",
+      "inner apm shirt": "/innerapm.png",
+    };
+    
+    // Check for exact match first
+    if (imageMap[typeLower]) {
+      return imageMap[typeLower];
+    }
+    
+    // Check for partial matches
+    for (const [key, value] of Object.entries(imageMap)) {
+      if (typeLower.includes(key) || key.includes(typeLower)) {
+        return value;
+      }
+    }
+    
+    // Default fallback based on common patterns
+    if (typeLower.includes("nametag") && typeLower.includes("no 4")) {
+      return "/nametagno4.jpg";
+    }
+    if (typeLower.includes("nametag") && (typeLower.includes("no 3") || !typeLower.includes("no 4"))) {
+      return "/nametagno3.png";
+    }
+    if (typeLower.includes("belt") && typeLower.includes("no 4")) {
+      return "/beltno4.png";
+    }
+    if (typeLower.includes("belt") && (typeLower.includes("no 3") || !typeLower.includes("no 4"))) {
+      return "/beltno3.jpg";
+    }
+    
+    // Return null to use the defaultImage fallback
+    return "";
+  };
+
+  // Helper function to generate items dynamically from inventory
+  // This ensures ALL items in admin inventory appear in user UI, even newly added ones
+  const generateItemsFromInventory = (category: string, defaultImage: string): UniformItem[] => {
+    // Get unique type names from inventory for this category
+    // Handle both exact category match and case-insensitive match
+    const categoryInventory = inventoryItems.filter(inv => {
+      const invCategory = inv.category?.toLowerCase() || "";
+      const targetCategory = category.toLowerCase();
+      return invCategory === targetCategory;
+    });
+    
+    const uniqueTypes = new Map<string, any>();
+    
+    categoryInventory.forEach(inv => {
+      // Normalize type names - map old names to new names for display
+      let normalizedType = inv.type;
+      let normalizedName = inv.name || inv.type;
+      
+      // Map old type names to new standardized names
+      // Check both type and name fields for old naming patterns
+      const typeLower = (inv.type || "").toLowerCase().trim();
+      const nameLower = (inv.name || "").toLowerCase().trim();
+      
+      if (category === "Uniform No 3") {
+        // Priority 1: Check if already in new format
+        if (typeLower === "uniform no 3 male" || typeLower.includes("uniform no 3") && typeLower.includes("male")) {
+          normalizedType = "Uniform No 3 Male";
+          normalizedName = "Uniform No 3 Male";
+        }
+        else if (typeLower === "uniform no 3 female" || (typeLower.includes("uniform no 3") && typeLower.includes("female"))) {
+          normalizedType = "Uniform No 3 Female";
+          normalizedName = "Uniform No 3 Female";
+        }
+        // Priority 2: Check for "Cloth No 3" patterns (old name for Male)
+        else if (typeLower === "cloth no 3" || 
+                 typeLower.includes("cloth no 3") ||
+                 nameLower === "cloth no 3" ||
+                 nameLower.includes("cloth no 3") ||
+                 (typeLower.includes("cloth") && typeLower.includes("no 3") && !typeLower.includes("pants") && !typeLower.includes("female"))) {
+          normalizedType = "Uniform No 3 Male";
+          normalizedName = "Uniform No 3 Male";
+        } 
+        // Priority 3: Check for "Pants No 3" patterns (old name for Female)
+        else if (typeLower === "pants no 3" || 
+                 typeLower.includes("pants no 3") ||
+                 nameLower === "pants no 3" ||
+                 nameLower.includes("pants no 3") ||
+                 (typeLower.includes("pants") && typeLower.includes("no 3")) ||
+                 (typeLower.includes("female") && typeLower.includes("no 3"))) {
+          normalizedType = "Uniform No 3 Female";
+          normalizedName = "Uniform No 3 Female";
+        }
+      }
+      
+      // Use normalized type as key to avoid duplicates
+      const typeKey = normalizedType;
+      if (!uniqueTypes.has(typeKey)) {
+        // Use image from inventory if available, otherwise use mapped image or defaultImage
+        // Check for various possible field names: image, imageUrl, picture, photo
+        const inventoryImage = inv.image || inv.imageUrl || inv.picture || inv.photo;
+        // If no inventory image, try to get mapped image based on normalized item type
+        const mappedImage = getItemImagePath(normalizedType);
+        const itemImage = inventoryImage || mappedImage || defaultImage;
+        
+        uniqueTypes.set(typeKey, {
+          type: normalizedType,
+          name: normalizedName, // Use normalized name for display
+          category: inv.category,
+          image: itemImage,
+          sizeChart: inv.sizeChart || getSizeChartUrl(category, normalizedType),
+        });
+      }
+    });
+    
+    // Convert to UniformItem array
+    return Array.from(uniqueTypes.values()).map((itemInfo, index) => {
+      // Determine current size and status from user's uniform data
+      let currentSize: string | undefined = undefined;
+      let currentStatus: "Available" | "Missing" = "Missing";
+      
+      // Try to find size from user's uniform data based on type
+      if (category === "Uniform No 3" && uniformNo3) {
+        if (itemInfo.type === "Uniform No 3 Male" || itemInfo.type.includes("Male")) {
+          currentSize = uniformNo3.clothNo3;
+          currentStatus = uniformNo3.clothNo3 ? "Available" : "Missing";
+        } else if (itemInfo.type === "Uniform No 3 Female" || itemInfo.type.includes("Female")) {
+          currentSize = uniformNo3.pantsNo3;
+          currentStatus = uniformNo3.pantsNo3 ? "Available" : "Missing";
+        } else if (itemInfo.type === "PVC Shoes") {
+          currentSize = uniformNo3.pvcShoes ? `UK ${uniformNo3.pvcShoes}` : undefined;
+          currentStatus = uniformNo3.pvcShoes ? "Available" : "Missing";
+        } else if (itemInfo.type === "Beret") {
+          currentSize = uniformNo3.beret;
+          currentStatus = uniformNo3.beret ? "Available" : "Missing";
+        }
+      } else if (category === "Uniform No 4" && uniformNo4) {
+        if (itemInfo.type === "Uniform No 4") {
+          currentSize = uniformNo4.clothNo4 || uniformNo4.pantsNo4;
+          currentStatus = (uniformNo4.clothNo4 || uniformNo4.pantsNo4) ? "Available" : "Missing";
+        } else if (itemInfo.type === "Boot") {
+          currentSize = uniformNo4.boot ? `UK ${uniformNo4.boot}` : undefined;
+          currentStatus = uniformNo4.boot ? "Available" : "Missing";
+        }
+      } else if (category === "Shirt" && tShirt) {
+        if (itemInfo.type === "Digital Shirt") {
+          currentSize = tShirt.digitalShirt;
+          currentStatus = tShirt.digitalShirt ? "Available" : "Missing";
+        } else if (itemInfo.type === "Company Shirt") {
+          currentSize = tShirt.companyShirt;
+          currentStatus = tShirt.companyShirt ? "Available" : "Missing";
+        } else if (itemInfo.type === "Inner APM Shirt") {
+          currentSize = tShirt.innerApmShirt;
+          currentStatus = tShirt.innerApmShirt ? "Available" : "Missing";
+        }
+      }
+      // Note: Accessories (Accessories No 3 and Accessories No 4) don't have sizes,
+      // so currentSize remains undefined, which is correct
+      
+      // Always use normalized type as display name to ensure consistency
+      // This ensures "Uniform No 3 Male" and "Uniform No 3 Female" are always displayed correctly
+      const displayName = itemInfo.type; // Use normalized type as display name
+      
+      return {
+        id: `${itemInfo.type.toLowerCase().replace(/\s+/g, '-')}-${index}`,
+        name: displayName, // Always use normalized type name for display
+        type: itemInfo.type, // Use normalized type
+        category: itemInfo.category,
+        image: itemInfo.image,
+        size: currentSize,
+        status: currentStatus,
+        sizeChart: itemInfo.sizeChart || getSizeChartUrl(itemInfo.category, itemInfo.type),
+      };
+    });
+  };
+
+  // Generate items for each category
+  // NOTE: After migration, backend returns "Uniform No 3 Male" and "Uniform No 3 Female"
+  // instead of "Cloth No 3" and "Pants No 3". This function displays items with new names.
+  // CRITICAL: Items are now generated dynamically from inventory, but fallback to hardcoded for backward compatibility
+  const getUniformNo3Items = (): UniformItem[] => {
+    // If inventory is loaded, generate items dynamically from inventory
+    if (inventoryItems.length > 0) {
+      const dynamicItems = generateItemsFromInventory("Uniform No 3", "/no3.png");
+      
+      // CRITICAL: Always ensure "Uniform No 3 Male" and "Uniform No 3 Female" are included
+      // These are core items that should always be visible, even if not in inventory yet
+      const requiredItems: UniformItem[] = [];
+      
+      // Check if "Uniform No 3 Male" exists in dynamic items
+      const hasMale = dynamicItems.some(item => 
+        item.type === "Uniform No 3 Male" || 
+        item.type.toLowerCase().includes("uniform no 3 male") ||
+        item.type.toLowerCase().includes("cloth no 3")
+      );
+      
+      // Check if "Uniform No 3 Female" exists in dynamic items
+      const hasFemale = dynamicItems.some(item => 
+        item.type === "Uniform No 3 Female" || 
+        item.type.toLowerCase().includes("uniform no 3 female") ||
+        item.type.toLowerCase().includes("pants no 3")
+      );
+      
+      // If not found in dynamic items, add them as hardcoded fallback
+      if (!hasMale) {
+        requiredItems.push({
+          id: "uniform-no-3-male-required",
+          name: "Uniform No 3 Male",
+          type: "Uniform No 3 Male",
+          category: "Uniform No 3",
+          image: getItemImagePath("Uniform No 3 Male") || "/no3.png",
+          size: uniformNo3?.clothNo3 || undefined,
+          status: uniformNo3?.clothNo3 ? "Available" : "Missing",
+          sizeChart: getSizeChartUrl("Uniform No 3", "Uniform No 3 Male"),
+        });
+      }
+      
+      if (!hasFemale) {
+        requiredItems.push({
+          id: "uniform-no-3-female-required",
+          name: "Uniform No 3 Female",
+          type: "Uniform No 3 Female",
+          category: "Uniform No 3",
+          image: getItemImagePath("Uniform No 3 Female") || "/no3.png",
+          size: uniformNo3?.pantsNo3 || undefined,
+          status: uniformNo3?.pantsNo3 ? "Available" : "Missing",
+          sizeChart: getSizeChartUrl("Uniform No 3", "Uniform No 3 Female"),
+        });
+      }
+      
+      // Filter dynamic items to only include items with sizes (main items, not accessories)
+      const filteredDynamicItems = dynamicItems.filter(item => {
+        // Always include "Uniform No 3 Male" and "Uniform No 3 Female" if they exist
+        const itemTypeLower = (item.type || "").toLowerCase();
+        if (itemTypeLower === "uniform no 3 male" || itemTypeLower === "uniform no 3 female") {
+          return true; // Always include these core items
+        }
+        
+        // For other items, check if they have sizes in inventory
+        const hasSizes = inventoryItems.some(inv => {
+          if (inv.category !== "Uniform No 3" || inv.size === null) return false;
+          
+          const invTypeLower = (inv.type || "").toLowerCase();
+          
+          // Direct match
+          if (invTypeLower === itemTypeLower) return true;
+          
+          // Check for normalized matches (old names → new names)
+          if (itemTypeLower === "uniform no 3 male") {
+            return invTypeLower.includes("cloth no 3") || 
+                   (invTypeLower.includes("cloth") && invTypeLower.includes("no 3") && !invTypeLower.includes("pants") && !invTypeLower.includes("female"));
+          }
+          if (itemTypeLower === "uniform no 3 female") {
+            return invTypeLower.includes("pants no 3") || 
+                   (invTypeLower.includes("pants") && invTypeLower.includes("no 3")) ||
+                   invTypeLower.includes("female");
+          }
+          
+          return false;
+        });
+        return hasSizes;
+      });
+      
+      // Merge required items with filtered dynamic items, removing duplicates
+      const allItems = [...requiredItems, ...filteredDynamicItems];
+      // Remove duplicates based on type
+      const uniqueItems = allItems.filter((item, index, self) =>
+        index === self.findIndex(i => i.type === item.type)
+      );
+      
+      // CRITICAL: Sort items in specific order for Uniform No 3
+      // Order: 1. Uniform No 3 Male, 2. Uniform No 3 Female, 3. PVC Shoes, 4. Beret
+      const getUniformNo3ItemOrder = (itemType: string): number => {
+        const typeLower = itemType.toLowerCase();
+        if (typeLower.includes("uniform no 3 male") || typeLower.includes("cloth no 3")) return 1;
+        if (typeLower.includes("uniform no 3 female") || typeLower.includes("pants no 3")) return 2;
+        if (typeLower.includes("pvc shoes") || typeLower === "pvc shoes") return 3;
+        if (typeLower.includes("beret") && !typeLower.includes("logo pin") && !typeLower.includes("pin")) return 4;
+        return 999; // Other items appear last
+      };
+      
+      uniqueItems.sort((a, b) => {
+        const orderA = getUniformNo3ItemOrder(a.type);
+        const orderB = getUniformNo3ItemOrder(b.type);
+        return orderA - orderB;
+      });
+      
+      return uniqueItems;
+    }
+    
+    // Fallback to hardcoded items for backward compatibility
+    return [
+      {
+        id: "cloth-no-3",
+        name: "Uniform No 3 Male",
+        type: "Uniform No 3 Male", // Updated: was "Cloth No 3"
+        category: "Uniform No 3",
+        image: getItemImagePath("Uniform No 3 Male") || "/no3.png",
+        size: uniformNo3?.clothNo3 || undefined,
+        status: uniformNo3?.clothNo3 ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 3", "Uniform No 3 Male"),
+      },
+      {
+        id: "pant-no-3",
+        name: "Uniform No 3 Female",
+        type: "Uniform No 3 Female", // Updated: was "Pants No 3"
+        category: "Uniform No 3",
+        image: getItemImagePath("Uniform No 3 Female") || "/no3.png",
+        size: uniformNo3?.pantsNo3 || undefined,
+        status: uniformNo3?.pantsNo3 ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 3", "Uniform No 3 Female"),
+      },
+      {
+        id: "pvc-shoes",
+        name: "PVC Shoes",
+        type: "PVC Shoes",
+        category: "Uniform No 3",
+        image: getItemImagePath("PVC Shoes") || "/no3.png",
+        size: uniformNo3?.pvcShoes ? `UK ${uniformNo3?.pvcShoes}` : undefined,
+        status: uniformNo3?.pvcShoes ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 3", "PVC Shoes"),
+      },
+      {
+        id: "beret",
+        name: "Beret",
+        type: "Beret",
+        category: "Uniform No 3",
+        image: getItemImagePath("Beret") || "/no3.png",
+        size: uniformNo3?.beret || undefined,
+        status: uniformNo3?.beret ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 3", "Beret"),
+      },
+    ];
+  };
+
+  const getUniformNo4Items = (): UniformItem[] => {
+    // If inventory is loaded, generate items dynamically from inventory
+    if (inventoryItems.length > 0) {
+      const dynamicItems = generateItemsFromInventory("Uniform No 4", "/no4.png");
+      // Only return items that have sizes (main items, not accessories)
+      const filteredItems = dynamicItems.filter(item => {
+        // Normalize inventory item types for comparison (handle old names)
+        const hasSizes = inventoryItems.some(inv => {
+          if (inv.category !== "Uniform No 4" || inv.size === null) return false;
+          
+          const invTypeLower = (inv.type || "").toLowerCase();
+          const itemTypeLower = (item.type || "").toLowerCase();
+          
+          // Direct match
+          if (invTypeLower === itemTypeLower) return true;
+          
+          // Check for normalized matches (old names → new names)
+          if (itemTypeLower === "uniform no 4") {
+            return invTypeLower.includes("uniform no 4") || 
+                   invTypeLower.includes("cloth no 4") ||
+                   invTypeLower.includes("pants no 4");
+          }
+          
+          return false;
+        });
+        return hasSizes;
+      });
+      
+      // CRITICAL: Sort items in specific order for Uniform No 4
+      // Order: 1. Uniform No 4, 2. Boot
+      const getUniformNo4ItemOrder = (itemType: string): number => {
+        const typeLower = itemType.toLowerCase();
+        if (typeLower.includes("uniform no 4") && !typeLower.includes("boot")) return 1;
+        if (typeLower.includes("boot") || typeLower === "boot") return 2;
+        return 999; // Other items appear last
+      };
+      
+      filteredItems.sort((a, b) => {
+        const orderA = getUniformNo4ItemOrder(a.type);
+        const orderB = getUniformNo4ItemOrder(b.type);
+        return orderA - orderB;
+      });
+      
+      return filteredItems;
+    }
+    
+    // Fallback to hardcoded items for backward compatibility
+    // Merged: "Cloth No 4" and "Pants No 4" are now a single "Uniform No 4" type
+    // Use clothNo4 if available, otherwise use pantsNo4 (they should be the same since they come as a pair)
+    const uniformNo4Size = uniformNo4?.clothNo4 || uniformNo4?.pantsNo4;
+    return [
+      {
+        id: "uniform-no-4",
+        name: "Uniform No 4",
+        type: "Uniform No 4", // Merged: replaces "Cloth No 4" and "Pants No 4"
+        category: "Uniform No 4",
+        image: getItemImagePath("Uniform No 4") || "/no4.png",
+        size: uniformNo4Size || undefined,
+        status: uniformNo4Size ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 4", "Uniform No 4"),
+      },
+      {
+        id: "boot",
+        name: "Boot",
+        type: "Boot",
+        category: "Uniform No 4",
+        image: getItemImagePath("Boot") || "/no4.png",
+        size: uniformNo4?.boot ? `UK ${uniformNo4.boot}` : undefined,
+        status: uniformNo4?.boot ? "Available" : "Missing",
+        sizeChart: getSizeChartUrl("Uniform No 4", "Boot"),
+      },
+    ];
+  };
+
+  const getAccessoriesNo3Items = (): UniformItem[] => {
+    // Always include hardcoded nametag item to ensure it's visible
+    const hardcodedNametag: UniformItem = {
+      id: "nametag-no-3",
+      name: "Nametag",
+      type: "Nametag",
+      category: "Accessories No 3",
+      image: getItemImagePath("Nametag No 3") || "/no3.png",
+      status: uniformNo3?.nametag ? "Available" : "Missing",
+    };
+    
+    // If inventory is loaded, generate items dynamically from inventory
+    if (inventoryItems.length > 0) {
+      const dynamicItems = generateItemsFromInventory("Accessories No 3", "/no3.png");
+      // Only return items that don't have sizes (accessories)
+      // CRITICAL: Also handle nametag with different type names (Nametag No 3, Name Tag No 3, Nametag)
+      const filteredItems = dynamicItems.filter(item => {
+        const itemTypeLower = item.type?.toLowerCase() || "";
+        const isNametag = itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag");
+        
+        // For nametag, check if it exists in inventory for Accessories No 3
+        if (isNametag) {
+          return inventoryItems.some(inv => {
+            const invCategory = inv.category?.toLowerCase() || "";
+            const invType = inv.type?.toLowerCase() || "";
+            return invCategory === "accessories no 3" && 
+                   (invType.includes("nametag no 3") || invType.includes("name tag no 3") || 
+                    (invType.includes("nametag") && !invType.includes("no 4"))) &&
+                   inv.size === null;
+          });
+        }
+        
+        // For other accessories, check if they have no sizes
+        const hasNoSizes = inventoryItems.some(inv => {
+          const invCategory = inv.category?.toLowerCase() || "";
+          const invType = inv.type?.toLowerCase() || "";
+          const itemTypeLower = item.type?.toLowerCase() || "";
+          return invCategory === "accessories no 3" && 
+                 invType === itemTypeLower && 
+                 inv.size === null;
+        });
+        return hasNoSizes;
+      }).map(item => {
+        // For accessories, determine status from uniform data
+        let accessoryStatus: "Available" | "Missing" = "Missing";
+        if (uniformNo3) {
+          const itemTypeLower = item.type?.toLowerCase() || "";
+          if (itemTypeLower === "apulet") accessoryStatus = uniformNo3.accessories.apulet ? "Available" : "Missing";
+          else if (itemTypeLower.includes("integrity badge")) accessoryStatus = uniformNo3.accessories.integrityBadge ? "Available" : "Missing";
+          else if (itemTypeLower.includes("shoulder badge")) accessoryStatus = uniformNo3.accessories.shoulderBadge ? "Available" : "Missing";
+          else if (itemTypeLower.includes("cel bar")) accessoryStatus = uniformNo3.accessories.celBar ? "Available" : "Missing";
+          else if (itemTypeLower.includes("beret logo pin")) accessoryStatus = uniformNo3.accessories.beretLogoPin ? "Available" : "Missing";
+          else if (itemTypeLower.includes("belt no 3")) accessoryStatus = uniformNo3.accessories.beltNo3 ? "Available" : "Missing";
+          else if (itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag")) {
+            // Check if it's Nametag No 3 (not No 4)
+            if (itemTypeLower.includes("no 3") || (!itemTypeLower.includes("no 4"))) {
+              accessoryStatus = uniformNo3.nametag ? "Available" : "Missing";
+            }
+          }
+        }
+        return { ...item, status: accessoryStatus };
+      });
+      
+      // Check if nametag is already in filtered items
+      const hasNametag = filteredItems.some(item => {
+        const itemTypeLower = item.type?.toLowerCase() || "";
+        return itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag");
+      });
+      
+      // If nametag is not in filtered items, add the hardcoded one
+      if (!hasNametag) {
+        filteredItems.push(hardcodedNametag);
+      }
+      
+      return filteredItems;
+    }
+    
+    // Fallback to hardcoded items for backward compatibility
+    return [
+      {
+        id: "apulet",
+        name: "Apulet",
+        type: "Apulet",
+        category: "Accessories No 3",
+        image: getItemImagePath("Apulet") || "/no3.png",
+        status: uniformNo3?.accessories.apulet ? "Available" : "Missing",
+      },
+      {
+        id: "integrity-badge",
+        name: "Integrity Badge",
+        type: "Integrity Badge",
+        category: "Accessories No 3",
+        image: getItemImagePath("Integrity Badge") || "/no3.png",
+        status: uniformNo3?.accessories.integrityBadge ? "Available" : "Missing",
+      },
+      {
+        id: "shoulder-badge",
+        name: "Shoulder Badge",
+        type: "Shoulder Badge",
+        category: "Accessories No 3",
+        image: getItemImagePath("Shoulder Badge") || "/no3.png",
+        status: uniformNo3?.accessories.shoulderBadge ? "Available" : "Missing",
+      },
+      {
+        id: "cel-bar",
+        name: "Cel Bar",
+        type: "Cel Bar",
+        category: "Accessories No 3",
+        image: getItemImagePath("Cel Bar") || "/no3.png",
+        status: uniformNo3?.accessories.celBar ? "Available" : "Missing",
+      },
+      {
+        id: "beret-logo-pin",
+        name: "Beret Logo Pin",
+        type: "Beret Logo Pin",
+        category: "Accessories No 3",
+        image: getItemImagePath("Beret Logo Pin") || "/no3.png",
+        status: uniformNo3?.accessories.beretLogoPin ? "Available" : "Missing",
+      },
+      {
+        id: "belt-no-3",
+        name: "Belt No 3",
+        type: "Belt No 3",
+        category: "Accessories No 3",
+        image: getItemImagePath("Belt No 3") || "/no3.png",
+        status: uniformNo3?.accessories.beltNo3 ? "Available" : "Missing",
+      },
+      {
+        id: "nametag-no-3",
+        name: "Nametag",
+        type: "Nametag",
+        category: "Accessories No 3",
+        image: getItemImagePath("Nametag No 3") || "/no3.png",
+        status: uniformNo3?.nametag ? "Available" : "Missing",
+      },
+    ];
+  };
+
+  const getAccessoriesNo4Items = (): UniformItem[] => {
+    // Always include hardcoded nametag item to ensure it's visible
+    const hardcodedNametag: UniformItem = {
+      id: "nametag-no-4",
+      name: "Nametag",
+      type: "Nametag",
+      category: "Accessories No 4",
+      image: getItemImagePath("Nametag No 4") || "/no4.png",
+      status: uniformNo4?.nametag ? "Available" : "Missing",
+    };
+    
+    // If inventory is loaded, generate items dynamically from inventory
+    if (inventoryItems.length > 0) {
+      const dynamicItems = generateItemsFromInventory("Accessories No 4", "/no4.png");
+      // Only return items that don't have sizes (accessories)
+      // CRITICAL: Also handle nametag with different type names (Nametag No 4, Name Tag No 4, Nametag)
+      const filteredItems = dynamicItems.filter(item => {
+        const itemTypeLower = item.type?.toLowerCase() || "";
+        const isNametag = itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag");
+        
+        // For nametag, check if it exists in inventory for Accessories No 4
+        if (isNametag) {
+          return inventoryItems.some(inv => {
+            const invCategory = inv.category?.toLowerCase() || "";
+            const invType = inv.type?.toLowerCase() || "";
+            return invCategory === "accessories no 4" && 
+                   (invType.includes("nametag no 4") || invType.includes("name tag no 4") || 
+                    (invType.includes("nametag") && !invType.includes("no 3"))) &&
+                   inv.size === null;
+          });
+        }
+        
+        // For other accessories, check if they have no sizes
+        const hasNoSizes = inventoryItems.some(inv => {
+          const invCategory = inv.category?.toLowerCase() || "";
+          const invType = inv.type?.toLowerCase() || "";
+          const itemTypeLower = item.type?.toLowerCase() || "";
+          return invCategory === "accessories no 4" && 
+                 invType === itemTypeLower && 
+                 inv.size === null;
+        });
+        return hasNoSizes;
+      }).map(item => {
+        // For accessories, determine status from uniform data
+        let accessoryStatus: "Available" | "Missing" = "Missing";
+        if (uniformNo4) {
+          const itemTypeLower = item.type?.toLowerCase() || "";
+          if (itemTypeLower.includes("apm tag")) accessoryStatus = uniformNo4.accessories.apmTag ? "Available" : "Missing";
+          else if (itemTypeLower.includes("belt no 4")) accessoryStatus = uniformNo4.accessories.beltNo4 ? "Available" : "Missing";
+          else if (itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag")) {
+            // Check if it's Nametag No 4 (not No 3)
+            if (itemTypeLower.includes("no 4") || (!itemTypeLower.includes("no 3"))) {
+              accessoryStatus = uniformNo4.nametag ? "Available" : "Missing";
+            }
+          }
+        }
+        return { ...item, status: accessoryStatus };
+      });
+      
+      // Check if nametag is already in filtered items
+      const hasNametag = filteredItems.some(item => {
+        const itemTypeLower = item.type?.toLowerCase() || "";
+        return itemTypeLower.includes("nametag") || itemTypeLower.includes("name tag");
+      });
+      
+      // If nametag is not in filtered items, add the hardcoded one
+      if (!hasNametag) {
+        filteredItems.push(hardcodedNametag);
+      }
+      
+      return filteredItems;
+    }
+    
+    // Fallback to hardcoded items for backward compatibility
+    return [
+      {
+        id: "apm-tag",
+        name: "APM Tag",
+        type: "APM Tag",
+        category: "Accessories No 4",
+        image: getItemImagePath("APM Tag") || "/no4.png",
+        status: uniformNo4?.accessories.apmTag ? "Available" : "Missing",
+      },
+      {
+        id: "belt-no-4",
+        name: "Belt No 4",
+        type: "Belt No 4",
+        category: "Accessories No 4",
+        image: getItemImagePath("Belt No 4") || "/no4.png",
+        status: uniformNo4?.accessories.beltNo4 ? "Available" : "Missing",
+      },
+      {
+        id: "nametag-no-4",
+        name: "Nametag",
+        type: "Nametag",
+        category: "Accessories No 4",
+        image: getItemImagePath("Nametag No 4") || "/no4.png",
+        status: uniformNo4?.nametag ? "Available" : "Missing",
+      },
+    ];
+  };
+
+  const getShirtItems = (): UniformItem[] => {
+    // If inventory is loaded, generate items dynamically from inventory
+    if (inventoryItems.length > 0) {
+      const dynamicItems = generateItemsFromInventory("Shirt", "/digital.png");
+      // Only return items that have sizes
+      return dynamicItems.filter(item => {
+        const hasSizes = inventoryItems.some(inv => 
+          (inv.category === "Shirt" || inv.category === "T-Shirt") && 
+          inv.type === item.type && 
+          inv.size !== null
+        );
+        return hasSizes;
+      }).map(item => {
+        // Determine status and price
+        let shirtStatus: "Available" | "Missing" = "Missing";
+        let shirtPrice: number | undefined = undefined;
+        if (item.type === "Digital Shirt") {
+          shirtStatus = tShirt?.digitalShirt ? "Available" : "Missing";
+          shirtPrice = shirtPrices.digitalShirt || undefined;
+        } else if (item.type === "Company Shirt") {
+          shirtStatus = tShirt?.companyShirt ? "Available" : "Missing";
+          shirtPrice = shirtPrices.companyShirt || undefined;
+        } else if (item.type === "Inner APM Shirt") {
+          shirtStatus = tShirt?.innerApmShirt ? "Available" : "Missing";
+          shirtPrice = shirtPrices.innerApmShirt || undefined;
+        }
+        return { ...item, status: shirtStatus, price: shirtPrice };
+      });
+    }
+    
+    // Fallback to hardcoded items for backward compatibility
+    return [
+      {
+        id: "digital-shirt",
+        name: "Digital",
+        type: "Digital Shirt",
+        category: "Shirt",
+        image: "/digital.png",
+        size: tShirt?.digitalShirt || undefined,
+        status: tShirt?.digitalShirt ? "Available" : "Missing",
+        price: shirtPrices.digitalShirt || undefined,
+        sizeChart: getSizeChartUrl("T-Shirt", "Digital Shirt"),
+      },
+      {
+        id: "company-shirt",
+        name: "Company",
+        type: "Company Shirt",
+        category: "Shirt",
+        image: "/company.png",
+        size: tShirt?.companyShirt || undefined,
+        status: tShirt?.companyShirt ? "Available" : "Missing",
+        price: shirtPrices.companyShirt || undefined,
+        sizeChart: getSizeChartUrl("T-Shirt", "Company Shirt"),
+      },
+      {
+        id: "inner-shirt",
+        name: "Inner",
+        type: "Inner APM Shirt",
+        category: "Shirt",
+        image: "/innerapm.png",
+        size: tShirt?.innerApmShirt || undefined,
+        status: tShirt?.innerApmShirt ? "Available" : "Missing",
+        price: shirtPrices.innerApmShirt || undefined,
+        sizeChart: getSizeChartUrl("T-Shirt", "Inner APM Shirt"),
+      },
+    ];
+  };
+
+  // Get items based on selected category
+  const getItemsForCategory = (category: string): UniformItem[] => {
+    switch (category) {
+      case "Uniform No 3":
+        return getUniformNo3Items();
+      case "Uniform No 4":
+        return getUniformNo4Items();
+      case "Accessories No 3":
+        return getAccessoriesNo3Items();
+      case "Accessories No 4":
+        return getAccessoriesNo4Items();
+      case "Shirt":
+        return getShirtItems();
+      default:
+        return [];
+    }
+  };
+
+  // Initialize formData when uniform data is loaded
+  useEffect(() => {
+    // Initialize all formData to ensure search results can be edited
+    if (uniformNo3) {
+      setFormDataNo3(uniformNo3);
+    }
+
+    if (uniformNo4) {
+      setFormDataNo4(uniformNo4);
+    }
+
+    if (tShirt) {
+      setFormDataTShirt(tShirt);
+    }
+  }, [uniformNo3, uniformNo4, tShirt]);
+
+  // Get all items from all categories
+  const getAllItems = (): UniformItem[] => {
+    return [
+      ...getUniformNo3Items(),
+      ...getUniformNo4Items(),
+      ...getAccessoriesNo3Items(),
+      ...getAccessoriesNo4Items(),
+      ...getShirtItems(),
+    ];
+  };
+
+  // Filter items: if searching, search across all categories; otherwise filter by selected category
+  const displayedItems = searchTerm
+    ? getAllItems().filter((item) =>
+        item.name.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : selectedCategory
+    ? getItemsForCategory(selectedCategory)
+    : [];
+
+  const categories = [
+    "Uniform No 3",
+    "Uniform No 4",
+    "Accessories No 3",
+    "Accessories No 4",
+    "Shirt",
+  ];
+
   if (loading) {
     return <div className="text-center py-12">Loading...</div>;
   }
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold text-gray-900">My Uniform</h1>
-        <p className="text-gray-600 mt-2">
-          Select a uniform type to add or update your uniform information
-        </p>
-      </div>
-
-      {/* Display Saved Uniform Information */}
-      {uniformNo3 && (
-        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold text-gray-900">Uniform No 3 Information</h2>
-            <button
-              onClick={() => {
-                setFormDataNo3(uniformNo3);
-                setShowUniformNo3Modal(true);
-              }}
-              className="flex items-center gap-2 text-blue-700 hover:text-blue-800"
-            >
-              <PencilIcon className="w-5 h-5" />
-              Edit
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {uniformNo3.clothNo3 && (
-              <div>
-                <p className="text-sm text-gray-600">Cloth No 3</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo3.clothNo3}</p>
-              </div>
-            )}
-            {uniformNo3.pantsNo3 && (
-              <div>
-                <p className="text-sm text-gray-600">Pants No 3</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo3.pantsNo3}</p>
-              </div>
-            )}
-            {uniformNo3.pvcShoes && (
-              <div>
-                <p className="text-sm text-gray-600">PVC Shoes</p>
-                <p className="text-lg font-semibold text-gray-900">UK {uniformNo3.pvcShoes}</p>
-              </div>
-            )}
-            {uniformNo3.beret && (
-              <div>
-                <p className="text-sm text-gray-600">Beret</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo3.beret}</p>
-              </div>
-            )}
-            {uniformNo3.nametag && (
-              <div>
-                <p className="text-sm text-gray-600">Nametag</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo3.nametag}</p>
-              </div>
-            )}
-            {(uniformNo3.accessories.apulet ||
-              uniformNo3.accessories.integrityBadge ||
-              uniformNo3.accessories.goldBadge ||
-              uniformNo3.accessories.celBar ||
-              uniformNo3.accessories.beretLogoPin ||
-              uniformNo3.accessories.beltNo3) && (
-              <div className="md:col-span-2 lg:col-span-3">
-                <p className="text-sm text-gray-600 mb-2">Accessories</p>
-                <div className="flex flex-wrap gap-2">
-                  {uniformNo3.accessories.apulet && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Apulet</span>
-                  )}
-                  {uniformNo3.accessories.integrityBadge && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Integrity Badge</span>
-                  )}
-                  {uniformNo3.accessories.goldBadge && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Gold Badge</span>
-                  )}
-                  {uniformNo3.accessories.celBar && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Cel Bar</span>
-                  )}
-                  {uniformNo3.accessories.beretLogoPin && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Beret Logo Pin</span>
-                  )}
-                  {uniformNo3.accessories.beltNo3 && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Belt No 3</span>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {uniformNo4 && (
-        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold text-gray-900">Uniform No 4 Information</h2>
-            <button
-              onClick={() => {
-                setFormDataNo4(uniformNo4);
-                setShowUniformNo4Modal(true);
-              }}
-              className="flex items-center gap-2 text-blue-700 hover:text-blue-800"
-            >
-              <PencilIcon className="w-5 h-5" />
-              Edit
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {uniformNo4.clothNo4 && (
-              <div>
-                <p className="text-sm text-gray-600">Cloth No 4</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo4.clothNo4}</p>
-              </div>
-            )}
-            {uniformNo4.pantsNo4 && (
-              <div>
-                <p className="text-sm text-gray-600">Pants No 4</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo4.pantsNo4}</p>
-              </div>
-            )}
-            {uniformNo4.boot && (
-              <div>
-                <p className="text-sm text-gray-600">Boot</p>
-                <p className="text-lg font-semibold text-gray-900">UK {uniformNo4.boot}</p>
-              </div>
-            )}
-            {uniformNo4.nametag && (
-              <div>
-                <p className="text-sm text-gray-600">Nametag</p>
-                <p className="text-lg font-semibold text-gray-900">{uniformNo4.nametag}</p>
-              </div>
-            )}
-            {(uniformNo4.accessories.apmTag || uniformNo4.accessories.beltNo4) && (
-              <div className="md:col-span-2 lg:col-span-3">
-                <p className="text-sm text-gray-600 mb-2">Accessories</p>
-                <div className="flex flex-wrap gap-2">
-                  {uniformNo4.accessories.apmTag && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">APM Tag</span>
-                  )}
-                  {uniformNo4.accessories.beltNo4 && (
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Belt No 4</span>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tShirt && (
-        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold text-gray-900">T-Shirt Information</h2>
-            <button
-              onClick={() => {
-                setFormDataTShirt(tShirt);
-                setShowTShirtModal(true);
-              }}
-              className="flex items-center gap-2 text-blue-700 hover:text-blue-800"
-            >
-              <PencilIcon className="w-5 h-5" />
-              Edit
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {tShirt.digitalShirt && (
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Digital Shirt</p>
-                <p className="text-lg font-semibold text-gray-900">{tShirt.digitalShirt}</p>
-              </div>
-            )}
-            {tShirt.innerApmShirt && (
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Inner APM Shirt</p>
-                <p className="text-lg font-semibold text-gray-900">{tShirt.innerApmShirt}</p>
-              </div>
-            )}
-            {tShirt.companyShirt && (
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Company Shirt</p>
-                <p className="text-lg font-semibold text-gray-900">{tShirt.companyShirt}</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Uniform Type Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Uniform No 3 Card */}
-        <div
-          onClick={() => {
-            if (uniformNo3) {
-              setFormDataNo3(uniformNo3);
-            } else {
-              setFormDataNo3({
-                clothNo3: "",
-                pantsNo3: "",
-                pvcShoes: "",
-                beret: "",
-                nametag: "",
-                accessories: {
-                  apulet: false,
-                  integrityBadge: false,
-                  goldBadge: false,
-                  celBar: false,
-                  beretLogoPin: false,
-                  beltNo3: false,
-                },
-              });
-            }
-            setShowUniformNo3Modal(true);
-          }}
-          className="bg-white rounded-lg shadow-md border-2 border-yellow-300 p-6 hover:shadow-lg transition cursor-pointer"
-        >
-          <div className="flex flex-col items-center text-center">
-            <img 
-              src="/no3.jpg" 
-              alt="Uniform No 3" 
-              className="w-32 h-32 object-contain rounded-lg mb-4" 
-            />
-            <h2 className="text-xl font-bold text-gray-900 mb-2">Uniform No 3</h2>
-            <p className="text-gray-600 text-sm mb-4">
-              {uniformNo3 ? "Click to update" : "Click to add"}
-            </p>
-            {uniformNo3 && (
-              <div className="w-full mt-2">
-                <div className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full">
-                  ✓ Information Added
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Uniform No 4 Card */}
-        <div
-          onClick={() => {
-            if (uniformNo4) {
-              setFormDataNo4(uniformNo4);
-            } else {
-              setFormDataNo4({
-                clothNo4: "",
-                pantsNo4: "",
-                boot: "",
-                nametag: "",
-                accessories: {
-                  apmTag: false,
-                  beltNo4: false,
-                },
-              });
-            }
-            setShowUniformNo4Modal(true);
-          }}
-          className="bg-white rounded-lg shadow-md border-2 border-yellow-300 p-6 hover:shadow-lg transition cursor-pointer"
-        >
-          <div className="flex flex-col items-center text-center">
-            <img 
-              src="/no4.png" 
-              alt="Uniform No 4" 
-              className="w-32 h-32 object-contain rounded-lg mb-4" 
-            />
-            <h2 className="text-xl font-bold text-gray-900 mb-2">Uniform No 4</h2>
-            <p className="text-gray-600 text-sm mb-4">
-              {uniformNo4 ? "Click to update" : "Click to add"}
-            </p>
-            {uniformNo4 && (
-              <div className="w-full mt-2">
-                <div className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full">
-                  ✓ Information Added
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* T-Shirt Card */}
-        <div
-          onClick={() => {
-            if (tShirt) {
-              setFormDataTShirt(tShirt);
-            } else {
-              setFormDataTShirt({
-                digitalShirt: "",
-                innerApmShirt: "",
-                companyShirt: "",
-              });
-            }
-            setShowTShirtModal(true);
-          }}
-          className="bg-white rounded-lg shadow-md border-2 border-yellow-300 p-6 hover:shadow-lg transition cursor-pointer"
-        >
-          <div className="flex flex-col items-center text-center">
-            <img 
-              src="/orensispa.png" 
-              alt="T-Shirt" 
-              className="w-32 h-32 object-contain rounded-lg mb-4" 
-            />
-            <h2 className="text-xl font-bold text-gray-900 mb-2">T-Shirt</h2>
-            <p className="text-gray-600 text-sm mb-4">
-              {tShirt ? "Click to update" : "Click to add"}
-            </p>
-            {tShirt && (
-              <div className="w-full mt-2">
-                <div className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full">
-                  ✓ Information Added
-                </div>
-              </div>
-            )}
-          </div>
+      <div className="mb-6 flex items-center gap-4">
+        {selectedCategory && (
+          <button
+            onClick={() => setSelectedCategory("")}
+            className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-md transition-all duration-300 hover:scale-110 border-2 border-blue-700"
+            title="Back to Categories"
+          >
+            <ArrowLeftIcon className="w-6 h-6" strokeWidth={2.5} />
+          </button>
+        )}
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>My Uniform</h1>
+          <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+            {selectedCategory ? `Viewing: ${selectedCategory}` : "Search or select a category to view your uniform items"}
+          </p>
         </div>
       </div>
+
+      {/* Search Bar */}
+      <div className="bg-white rounded-lg shadow-md border border-gray-200 p-4 mb-6">
+        <div className="relative">
+          <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search for items..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+      </div>
+
+      {/* Category Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-6">
+        {categories.map((category) => {
+          const categoryImages: Record<string, string> = {
+            "Uniform No 3": "/no3.png",
+            "Uniform No 4": "/no4.png",
+            "Accessories No 3": "/no3.png",
+            "Accessories No 4": "/no4.png",
+            "Shirt": "/digital.png",
+          };
+          const categoryImage = categoryImages[category] || "/no3.png";
+          
+          return (
+            <button
+              key={category}
+              onClick={() => setSelectedCategory(category)}
+              className={`bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 p-6 hover:shadow-lg transition-all duration-300 hover:scale-105 text-left ${
+                selectedCategory === category
+                  ? "border-orange-500 shadow-lg scale-105"
+                  : "border-orange-300"
+              }`}
+            >
+              {/* Category Image */}
+              <div className="mb-4 flex justify-center items-center bg-gray-50 rounded-lg border-2 border-orange-200" style={{ height: '160px' }}>
+                <img
+                  src={categoryImage}
+                  alt={category}
+                  className="max-w-full max-h-full object-contain p-2"
+                />
+              </div>
+
+              {/* Category Name */}
+              <h2 className="text-xl font-bold text-gray-900 text-center">{category}</h2>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Items Display - Editable Cards */}
+      {(selectedCategory || searchTerm) && displayedItems.length > 0 && (
+        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
+          <h2 className="text-xl font-bold text-gray-900 mb-4">
+            {searchTerm ? `Search Results for "${searchTerm}"` : selectedCategory}
+          </h2>
+
+          {displayedItems.length === 0 ? (
+            <p className="text-center text-gray-500 py-8">
+              No items found. {searchTerm && "Try a different search term."}
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {displayedItems.map((item) => {
+                // Get current value for this item - use item.category to determine which data to use
+                // Priority: formData (current editing state) > database values
+                const getCurrentValue = () => {
+                  const category = item.category;
+                  
+                  if (category === "Uniform No 3") {
+                    if (item.type === "Uniform No 3 Male" || item.type === "Cloth No 3") return formDataNo3?.clothNo3 || uniformNo3?.clothNo3 || "";
+                    if (item.type === "Uniform No 3 Female" || item.type === "Pants No 3") return formDataNo3?.pantsNo3 || uniformNo3?.pantsNo3 || "";
+                    if (item.type === "PVC Shoes") return formDataNo3?.pvcShoes || uniformNo3?.pvcShoes || "";
+                    if (item.type === "Beret") return formDataNo3?.beret || uniformNo3?.beret || "";
+                    if (item.type === "Apulet") {
+                      const value = formDataNo3?.accessories?.apulet ?? uniformNo3?.accessories?.apulet;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Integrity Badge") {
+                      const value = formDataNo3?.accessories?.integrityBadge ?? uniformNo3?.accessories?.integrityBadge;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Shoulder Badge") {
+                      const value = formDataNo3?.accessories?.shoulderBadge ?? uniformNo3?.accessories?.shoulderBadge;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Cel Bar") {
+                      const value = formDataNo3?.accessories?.celBar ?? uniformNo3?.accessories?.celBar;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Beret Logo Pin") {
+                      const value = formDataNo3?.accessories?.beretLogoPin ?? uniformNo3?.accessories?.beretLogoPin;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Belt No 3") {
+                      const value = formDataNo3?.accessories?.beltNo3 ?? uniformNo3?.accessories?.beltNo3;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Nametag") {
+                      const nametagValue = formDataNo3?.nametag || uniformNo3?.nametag || "";
+                      return nametagValue && nametagValue.trim() !== "" ? "Available" : "Missing";
+                    }
+                  } else if (category === "Uniform No 4") {
+                    // Merged: "Cloth No 4" and "Pants No 4" are now "Uniform No 4"
+                    if (item.type === "Uniform No 4" || item.type === "Cloth No 4" || item.type === "Pants No 4") {
+                      return formDataNo4?.clothNo4 || formDataNo4?.pantsNo4 || uniformNo4?.clothNo4 || uniformNo4?.pantsNo4 || "";
+                    }
+                    if (item.type === "Boot") return formDataNo4?.boot || uniformNo4?.boot || "";
+                    if (item.type === "APM Tag") {
+                      const value = formDataNo4?.accessories?.apmTag ?? uniformNo4?.accessories?.apmTag;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Belt No 4") {
+                      const value = formDataNo4?.accessories?.beltNo4 ?? uniformNo4?.accessories?.beltNo4;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Nametag") {
+                      const nametagValue = formDataNo4?.nametag || uniformNo4?.nametag || "";
+                      return nametagValue && nametagValue.trim() !== "" ? "Available" : "Missing";
+                    }
+                  } else if (category === "Shirt") {
+                    if (item.type === "Digital Shirt") return formDataTShirt?.digitalShirt || tShirt?.digitalShirt || "";
+                    if (item.type === "Company Shirt") return formDataTShirt?.companyShirt || tShirt?.companyShirt || "";
+                    if (item.type === "Inner APM Shirt") return formDataTShirt?.innerApmShirt || tShirt?.innerApmShirt || "";
+                  } else if (category === "Accessories No 3") {
+                    if (item.type === "Apulet") {
+                      const value = formDataNo3?.accessories?.apulet ?? uniformNo3?.accessories?.apulet;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Integrity Badge") {
+                      const value = formDataNo3?.accessories?.integrityBadge ?? uniformNo3?.accessories?.integrityBadge;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Shoulder Badge") {
+                      const value = formDataNo3?.accessories?.shoulderBadge ?? uniformNo3?.accessories?.shoulderBadge;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Cel Bar") {
+                      const value = formDataNo3?.accessories?.celBar ?? uniformNo3?.accessories?.celBar;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Beret Logo Pin") {
+                      const value = formDataNo3?.accessories?.beretLogoPin ?? uniformNo3?.accessories?.beretLogoPin;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Belt No 3") {
+                      const value = formDataNo3?.accessories?.beltNo3 ?? uniformNo3?.accessories?.beltNo3;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Nametag") {
+                      const nametagValue = formDataNo3?.nametag || uniformNo3?.nametag || "";
+                      return nametagValue && nametagValue.trim() !== "" ? "Available" : "Missing";
+                    }
+                  } else if (category === "Accessories No 4") {
+                    if (item.type === "APM Tag") {
+                      const value = formDataNo4?.accessories?.apmTag ?? uniformNo4?.accessories?.apmTag;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Belt No 4") {
+                      const value = formDataNo4?.accessories?.beltNo4 ?? uniformNo4?.accessories?.beltNo4;
+                      return value ? "Available" : "Missing";
+                    }
+                    if (item.type === "Nametag") {
+                      const nametagValue = formDataNo4?.nametag || uniformNo4?.nametag || "";
+                      return nametagValue && nametagValue.trim() !== "" ? "Available" : "Missing";
+                    }
+                  }
+                  return "";
+                };
+
+                const currentValue = getCurrentValue();
+                const isAccessory = !item.size && (item.category.includes("Accessories") || item.type.includes("Badge") || item.type.includes("Tag") || item.type.includes("Belt") || item.type.includes("Apulet") || item.type.includes("Cel Bar") || item.type.includes("Pin"));
+                const isNametag = item.type === "Nametag";
+
+                // Get size options based on item type
+                const getSizeOptions = () => {
+                  if (item.type.includes("Shoe") || item.type === "PVC Shoes") return shoeSizes;
+                  if (item.type === "Boot") return bootSizes;
+                  if (item.type === "Beret") return beretSizes;
+                  return clothSizes;
+                };
+
+                const handleSizeChange = (value: string) => {
+                  const category = item.category;
+                  // Remove "UK " prefix if present from the value
+                  const cleanValue = value.replace(/^UK\s*/i, "").trim();
+                  
+                  if (category === "Uniform No 3") {
+                    const updated = { ...formDataNo3 };
+                    if (item.type === "Uniform No 3 Male" || item.type === "Cloth No 3") {
+                      updated.clothNo3 = cleanValue;
+                      // Auto-set status to "Available" when size is selected
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "Uniform No 3 Female" || item.type === "Pants No 3") {
+                      updated.pantsNo3 = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "PVC Shoes") {
+                      updated.pvcShoes = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "Beret") {
+                      updated.beret = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    setFormDataNo3(updated);
+                  } else if (category === "Uniform No 4") {
+                    const updated = { ...formDataNo4 };
+                    // Merged: "Uniform No 4" replaces "Cloth No 4" and "Pants No 4"
+                    // Since they come as a pair, set both to the same value
+                    if (item.type === "Uniform No 4" || item.type === "Cloth No 4" || item.type === "Pants No 4") {
+                      updated.clothNo4 = cleanValue;
+                      updated.pantsNo4 = cleanValue; // Same size for both since they come as a pair
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "Boot") {
+                      updated.boot = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    setFormDataNo4(updated);
+                  } else if (category === "Shirt") {
+                    const updated = { ...formDataTShirt };
+                    if (item.type === "Digital Shirt") {
+                      updated.digitalShirt = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "Company Shirt") {
+                      updated.companyShirt = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    if (item.type === "Inner APM Shirt") {
+                      updated.innerApmShirt = cleanValue;
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: "Available" }));
+                    }
+                    setFormDataTShirt(updated);
+                  }
+                };
+
+                const handleStatusChange = (value: string) => {
+                  const category = item.category;
+                  const statusValue = value as "Available" | "Missing" | "Not Available";
+                  
+                  // Status is independent of size - user can set status to indicate "no planning"
+                  // even if size is selected (like in Excel: ADA/TIADA independent of size)
+                  
+                  if (category === "Uniform No 3" || category === "Accessories No 3") {
+                    const updated = { ...formDataNo3 };
+                    
+                    // Handle items with sizes - store status separately
+                    if (item.type === "Uniform No 3 Male" || item.type === "Uniform No 3 Female" || item.type === "Cloth No 3" || item.type === "Pants No 3" || item.type === "PVC Shoes" || item.type === "Beret") {
+                      // Store status independently - don't clear size
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: statusValue }));
+                    }
+                    
+                    // Handle accessories (status stored as boolean AND in itemStatus)
+                    // CRITICAL: Update both the boolean AND itemStatus so getCurrentStatus() works correctly
+                    const statusKey = `${category}-${item.type}`;
+                    setItemStatus(prev => ({ ...prev, [statusKey]: statusValue }));
+                    
+                    if (item.type === "Apulet") updated.accessories.apulet = value === "Available";
+                    if (item.type === "Integrity Badge") updated.accessories.integrityBadge = value === "Available";
+                    if (item.type === "Shoulder Badge") updated.accessories.shoulderBadge = value === "Available";
+                    if (item.type === "Cel Bar") updated.accessories.celBar = value === "Available";
+                    if (item.type === "Beret Logo Pin") updated.accessories.beretLogoPin = value === "Available";
+                    if (item.type === "Belt No 3") updated.accessories.beltNo3 = value === "Available";
+                    if (item.type === "Nametag") {
+                      // For nametag, if status is "Not Available" or "Missing", clear the name
+                      if (value === "Not Available" || value === "Missing") {
+                        updated.nametag = "";
+                      }
+                    }
+                    setFormDataNo3(updated);
+                  } else if (category === "Uniform No 4" || category === "Accessories No 4") {
+                    const updated = { ...formDataNo4 };
+                    
+                    // Handle items with sizes - store status separately
+                    // Merged: "Cloth No 4" and "Pants No 4" are now "Uniform No 4"
+                    if (item.type === "Uniform No 4" || item.type === "Cloth No 4" || item.type === "Pants No 4" || item.type === "Boot") {
+                      // Store status independently - don't clear size
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: statusValue }));
+                    }
+                    
+                    // Handle accessories (status stored as boolean AND in itemStatus)
+                    // CRITICAL: Update both the boolean AND itemStatus so getCurrentStatus() works correctly
+                    const statusKey = `${category}-${item.type}`;
+                    setItemStatus(prev => ({ ...prev, [statusKey]: statusValue }));
+                    
+                    if (item.type === "APM Tag") updated.accessories.apmTag = value === "Available";
+                    if (item.type === "Belt No 4") updated.accessories.beltNo4 = value === "Available";
+                    if (item.type === "Nametag") {
+                      // For nametag, if status is "Not Available" or "Missing", clear the name
+                      if (value === "Not Available" || value === "Missing") {
+                        updated.nametag = "";
+                      }
+                    }
+                    setFormDataNo4(updated);
+                  } else if (category === "Shirt") {
+                    const updated = { ...formDataTShirt };
+                    
+                    // Handle shirts with sizes - store status separately
+                    if (item.type === "Digital Shirt" || item.type === "Company Shirt" || item.type === "Inner APM Shirt") {
+                      // Store status independently - don't clear size
+                      setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: statusValue }));
+                    }
+                    setFormDataTShirt(updated);
+                  }
+                };
+
+                const handleNametagChange = (value: string) => {
+                  const category = item.category;
+                  
+                  if (category === "Accessories No 3") {
+                    const updated = { ...formDataNo3 };
+                    updated.nametag = value;
+                    setFormDataNo3(updated);
+                  } else if (category === "Accessories No 4") {
+                    const updated = { ...formDataNo4 };
+                    updated.nametag = value;
+                    setFormDataNo4(updated);
+                  }
+                };
+
+                // Get nametag value
+                const getNametagValue = () => {
+                  const category = item.category;
+                  
+                  if (category === "Accessories No 3") {
+                    return formDataNo3?.nametag || "";
+                  } else if (category === "Accessories No 4") {
+                    return formDataNo4?.nametag || "";
+                  }
+                  return "";
+                };
+
+                // Get current status value
+                // Status is independent of size - can be "Available", "Missing", or "Not Available"
+                // even if size is selected (to indicate "no planning" like in Excel)
+                const getCurrentStatus = () => {
+                  if (isAccessory) {
+                    // CRITICAL: For all accessories, check itemStatus first (from API)
+                    const statusKey = `${item.category}-${item.type}`;
+                    if (itemStatus[statusKey]) {
+                      return itemStatus[statusKey];
+                    }
+                    
+                    if (isNametag) {
+                      // For nametag, determine from nametag value if status not set
+                      const nametagValue = getNametagValue();
+                      // If name exists, status is "Available"
+                      if (nametagValue && nametagValue.trim() !== "") {
+                        return "Available";
+                      }
+                      // Otherwise default to "Missing"
+                      return "Missing";
+                    }
+                    // For other accessories, fall back to currentValue (based on boolean)
+                    return currentValue;
+                  }
+                  
+                  // For items with sizes, check if status was manually set
+                  const statusKey = `${item.category}-${item.type}`;
+                  if (itemStatus[statusKey]) {
+                    return itemStatus[statusKey];
+                  }
+                  
+                  // Default: if size exists, show "Available", otherwise "Missing"
+                  // But user can change it to "Not Available" to indicate "no planning"
+                  return currentValue && currentValue.trim() !== "" ? "Available" : "Missing";
+                };
+
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-white rounded-lg border border-gray-200 overflow-hidden w-full"
+                  >
+                    {/* Header */}
+                    <div className="bg-gray-100 px-4 py-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-gray-900">{item.name}</h3>
+                        <div className="flex items-center gap-2">
+                          {searchTerm && (
+                            <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">
+                              {item.category}
+                            </span>
+                          )}
+                          {/* Size Chart Button - Show for items that have size dropdowns (not accessories) */}
+                          {!isAccessory && !isNametag && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // Try to get size chart URL - first from item, then from getSizeChartUrl function
+                                const sizeChartUrl = item.sizeChart || getSizeChartUrl(item.category, item.type);
+                                
+                                if (sizeChartUrl) {
+                                  setSizeChartModal({
+                                    isOpen: true,
+                                    itemName: item.name,
+                                    sizeChartUrl: sizeChartUrl,
+                                  });
+                                } else {
+                                  // Show message if no size chart is available
+                                  Swal.fire({
+                                    icon: "info",
+                                    title: "Size Chart Not Available",
+                                    text: `Size chart for ${item.name} is not currently available. Please contact the logistics coordinator.`,
+                                    confirmButtonColor: "#1d4ed8",
+                                  });
+                                }
+                              }}
+                              className="px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition flex items-center gap-1"
+                              title="View Size Chart"
+                            >
+                              <ChartBarIcon className="w-4 h-4" />
+                              Size Chart
+                            </button>
+                          )}
+                          {/* Save Button */}
+                          <button
+                            onClick={async () => {
+                              // Create item to save - read from currentValue which reflects latest formData state
+                              let itemToSave: any = null;
+                              const category = item.category;
+                              
+                              // Use currentValue which is computed from the latest formData state
+                              const sizeValue = currentValue || "";
+                              const statusValue = getCurrentStatus();
+                              
+                              console.log("Save clicked for:", item.name, "Size:", sizeValue, "Status:", statusValue);
+                              console.log("Current formData:", { formDataNo3, formDataNo4, formDataTShirt });
+                              
+                              if (category === "Uniform No 3") {
+                                // Handle hardcoded items first
+                                if (item.type === "Uniform No 3 Male" || item.type === "Cloth No 3") {
+                                  // Use the sizeValue from dropdown or fallback to formData
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo3.clothNo3 || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Uniform No 3", 
+                                      type: "Uniform No 3 Male", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "Uniform No 3 Female" || item.type === "Pants No 3") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo3.pantsNo3 || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Uniform No 3", 
+                                      type: "Uniform No 3 Female", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "PVC Shoes") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo3.pvcShoes || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    const cleanSize = size.replace(/^UK\s*/i, "");
+                                    itemToSave = { 
+                                      category: "Uniform No 3", 
+                                      type: "PVC Shoes", 
+                                      size: cleanSize, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "Beret") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo3.beret || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Uniform No 3", 
+                                      type: "Beret", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else {
+                                  // Handle new/dynamic items from inventory (items with sizes)
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : "";
+                                  if (size && size.trim() !== "") {
+                                    // Check if this is a shoe/boot type that needs UK prefix removal
+                                    const cleanSize = (item.type.toLowerCase().includes("shoe") || item.type.toLowerCase().includes("boot")) 
+                                      ? size.replace(/^UK\s*/i, "") 
+                                      : size;
+                                    itemToSave = { 
+                                      category: "Uniform No 3", 
+                                      type: item.type, 
+                                      size: cleanSize, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                }
+                              } else if (category === "Uniform No 4") {
+                                const uniformNo4Size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo4.clothNo4 || formDataNo4.pantsNo4 || "");
+                                // Handle hardcoded items first
+                                if ((item.type === "Uniform No 4" || item.type === "Cloth No 4" || item.type === "Pants No 4")) {
+                                  if (uniformNo4Size && uniformNo4Size !== "Select Size" && uniformNo4Size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Uniform No 4", 
+                                      type: "Uniform No 4", 
+                                      size: uniformNo4Size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "Boot") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataNo4.boot || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    const cleanSize = size.replace(/^UK\s*/i, "");
+                                    itemToSave = { 
+                                      category: "Uniform No 4", 
+                                      type: "Boot", 
+                                      size: cleanSize, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else {
+                                  // Handle new/dynamic items from inventory (items with sizes)
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : "";
+                                  if (size && size.trim() !== "") {
+                                    // Check if this is a shoe/boot type that needs UK prefix removal
+                                    const cleanSize = (item.type.toLowerCase().includes("shoe") || item.type.toLowerCase().includes("boot")) 
+                                      ? size.replace(/^UK\s*/i, "") 
+                                      : size;
+                                    itemToSave = { 
+                                      category: "Uniform No 4", 
+                                      type: item.type, 
+                                      size: cleanSize, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                }
+                              } else if (category === "Shirt") {
+                                // Handle hardcoded items first
+                                if (item.type === "Digital Shirt") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataTShirt.digitalShirt || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Shirt", 
+                                      type: "Digital Shirt", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "Company Shirt") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataTShirt.companyShirt || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Shirt", 
+                                      type: "Company Shirt", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else if (item.type === "Inner APM Shirt") {
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : (formDataTShirt.innerApmShirt || "");
+                                  if (size && size !== "Select Size" && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Shirt", 
+                                      type: "Inner APM Shirt", 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                } else {
+                                  // Handle new/dynamic items from inventory
+                                  const size = sizeValue && sizeValue !== "Select Size" ? sizeValue : "";
+                                  if (size && size.trim() !== "") {
+                                    itemToSave = { 
+                                      category: "Shirt", 
+                                      type: item.type, 
+                                      size: size, 
+                                      quantity: 1,
+                                      status: statusValue || "Available"
+                                    };
+                                  }
+                                }
+                              } else if (category === "Accessories No 3") {
+                                // For accessories, send status to backend (Available, Missing, or Not Available)
+                                // Backend now supports all status values
+                                const validStatus = ["Available", "Missing", "Not Available"].includes(statusValue) 
+                                  ? statusValue 
+                                  : (statusValue === "Available" ? "Available" : "Missing");
+                                
+                                // Handle hardcoded items first
+                                if (item.type === "Apulet") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Apulet", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Integrity Badge") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Integrity Badge", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Shoulder Badge") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Shoulder Badge", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Cel Bar") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Cel Bar", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Beret Logo Pin") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Beret Logo Pin", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Belt No 3") {
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Belt No 3", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Nametag") {
+                                  const nametagValue = getNametagValue() || "";
+                                  // Save nametag even if value is empty, as long as status is set
+                                  // This allows saving "Missing" or "Not Available" status
+                                  // CRITICAL: Use "Nametag No 3" type name for Accessories No 3
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: "Nametag No 3", 
+                                    size: null, 
+                                    quantity: 1, 
+                                    notes: nametagValue,
+                                    status: validStatus
+                                  };
+                                } else {
+                                  // Handle new/dynamic items from inventory (e.g., "Gutter")
+                                  // For any other item type in Accessories No 3, save it dynamically
+                                  itemToSave = { 
+                                    category: "Accessories No 3", 
+                                    type: item.type, 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                }
+                              } else if (category === "Accessories No 4") {
+                                // For accessories, send status to backend (Available, Missing, or Not Available)
+                                // Backend now supports all status values
+                                const validStatus = ["Available", "Missing", "Not Available"].includes(statusValue) 
+                                  ? statusValue 
+                                  : (statusValue === "Available" ? "Available" : "Missing");
+                                
+                                // Handle hardcoded items first
+                                if (item.type === "APM Tag") {
+                                  itemToSave = { 
+                                    category: "Accessories No 4", 
+                                    type: "APM Tag", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Belt No 4") {
+                                  itemToSave = { 
+                                    category: "Accessories No 4", 
+                                    type: "Belt No 4", 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                } else if (item.type === "Nametag") {
+                                  const nametagValue = getNametagValue() || "";
+                                  // Save nametag even if value is empty, as long as status is set
+                                  // This allows saving "Missing" or "Not Available" status
+                                  // CRITICAL: Use "Nametag No 4" type name for Accessories No 4
+                                  itemToSave = { 
+                                    category: "Accessories No 4", 
+                                    type: "Nametag No 4", 
+                                    size: null, 
+                                    quantity: 1, 
+                                    notes: nametagValue,
+                                    status: validStatus
+                                  };
+                                } else {
+                                  // Handle new/dynamic items from inventory (e.g., "Gutter")
+                                  // For any other item type in Accessories No 4, save it dynamically
+                                  itemToSave = { 
+                                    category: "Accessories No 4", 
+                                    type: item.type, 
+                                    size: null, 
+                                    quantity: 1,
+                                    status: validStatus
+                                  };
+                                }
+                              }
+                              
+                              if (itemToSave) {
+                                // CRITICAL: Check inventory quantity before saving
+                                // EXCEPTION: Nametag is custom by name and NOT managed in inventory
+                                // Nametag should NOT be affected by inventory quantity checks
+                                const isNametag = itemToSave.type?.toLowerCase().includes("nametag") || 
+                                                  itemToSave.type?.toLowerCase().includes("name tag");
+                                
+                                // Skip inventory check for Nametag - it's custom by name, not stock-managed
+                                let inventoryQty: number | null = null; // null means not checked (for nametag)
+                                
+                                if (!isNametag) {
+                                  // Only check inventory for items with sizes (main items), not accessories
+                                  // Accessories don't have sizes, so we check by category + type only
+                                  const itemSize = itemToSave.size || null;
+                                  inventoryQty = 0;
+                                  
+                                  // For items with sizes, check specific size quantity
+                                  // For accessories (no size), check if any quantity exists for that type
+                                  if (itemSize) {
+                                    inventoryQty = getInventoryQuantity(
+                                      itemToSave.category,
+                                      itemToSave.type,
+                                      itemSize
+                                    );
+                                  } else {
+                                    // For accessories, check if any size variant exists with quantity > 0
+                                    const accessoryItems = inventoryItems.filter(inv => 
+                                      inv.category?.toLowerCase() === itemToSave.category.toLowerCase() &&
+                                      inv.type?.toLowerCase() === itemToSave.type.toLowerCase() &&
+                                      inv.size === null
+                                    );
+                                    inventoryQty = accessoryItems.length > 0 
+                                      ? Math.max(...accessoryItems.map(inv => inv.quantity || 0))
+                                      : 0;
+                                  }
+                                  
+                                  // If quantity is 0, show popup and set status to "Not Available"
+                                  if (inventoryQty === 0) {
+                                    await Swal.fire({
+                                      icon: "warning",
+                                      title: "Item Not Available",
+                                      html: `
+                                        <p>The item <strong>${item.name}</strong>${itemSize ? ` (Size: ${itemSize})` : ''} is currently not available in inventory.</p>
+                                        <p>Please contact the Logistics Coordinator for assistance.</p>
+                                        <p><strong>Email:</strong> korsispa@upm.edu.my</p>
+                                      `,
+                                      confirmButtonText: "OK, Set Status to 'Not Available'",
+                                      confirmButtonColor: "#1d4ed8",
+                                    });
+                                    
+                                    // Set status to "Not Available" but still allow saving
+                                    itemToSave.status = "Not Available";
+                                    
+                                    // Update itemStatus state to reflect "Not Available"
+                                    const statusKey = `${item.category}-${item.type}`;
+                                    setItemStatus(prev => ({ ...prev, [statusKey]: "Not Available" }));
+                                  }
+                                }
+                                // Note: Nametag bypasses inventory check - it's custom by name, not stock-managed
+                                
+                                // Check if item already exists
+                                const hasExisting = !!(category === "Uniform No 3" && uniformNo3) ||
+                                                  !!(category === "Uniform No 4" && uniformNo4) ||
+                                                  !!(category === "Shirt" && tShirt) ||
+                                                  !!(category === "Accessories No 3" && uniformNo3) ||
+                                                  !!(category === "Accessories No 4" && uniformNo4);
+                                
+                                console.log("Saving item:", itemToSave);
+                                console.log("Has existing uniform:", hasExisting);
+                                console.log("Inventory quantity:", inventoryQty !== null ? inventoryQty : "N/A (Nametag - not checked)");
+                                const success = await handleSubmitUniform([itemToSave], item.type, hasExisting, category);
+                                if (success) {
+                                  console.log("Save successful, refreshing data...");
+                                  // Refresh the data after successful save
+                                  await fetchUniform();
+                                  console.log("Data refreshed");
+                                } else {
+                                  console.error("Save failed");
+                                }
+                              } else {
+                                console.warn("No item to save - missing size or status");
+                                Swal.fire({
+                                  icon: "warning",
+                                  title: "No Data to Save",
+                                  text: `Please select a size or set status to "Available" for ${item.name}.`,
+                                  confirmButtonColor: "#1d4ed8",
+                                });
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-blue-700 text-white text-xs font-medium rounded hover:bg-blue-800 transition"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Content */}
+                    <div className="p-4">
+                      <div className="flex items-center gap-4">
+                        {/* Picture */}
+                        <div className="flex-shrink-0">
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="w-20 h-20 object-contain rounded bg-white border border-gray-200"
+                          />
+                </div>
+                        {/* Size Dropdown */}
+                        {!isAccessory && (
+                          <div className="flex-1 min-w-[120px] max-w-[150px]">
+                            <label className="block text-xs text-gray-600 mb-1">Size</label>
+                            <select
+                              value={currentValue || ""}
+                              onChange={(e) => {
+                                const selectedValue = e.target.value;
+                                handleSizeChange(selectedValue);
+                              }}
+                              className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                              <option value="">Select Size</option>
+                              {getSizeOptions().map((size) => (
+                                <option key={size} value={size}>
+                                  {item.type.includes("Shoe") || item.type === "PVC Shoes" || item.type === "Boot"
+                                    ? `UK ${size}`
+                                    : size}
+                                </option>
+                              ))}
+                            </select>
+              </div>
+            )}
+                        {/* Name Input for Nametag */}
+                        {isNametag && (
+                          <div className="flex-1 min-w-[200px] max-w-[250px]">
+                            <label className="block text-xs text-gray-600 mb-1">Name</label>
+                            <input
+                              type="text"
+                              value={getNametagValue()}
+                              onChange={(e) => handleNametagChange(e.target.value)}
+                              placeholder="Enter name for nametag"
+                              className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            />
+          </div>
+                        )}
+                        {/* Status Dropdown */}
+                        <div className={!isAccessory ? "flex-1 min-w-[100px] max-w-[130px]" : "flex-1 min-w-[150px] max-w-[200px]"}>
+                          <label className="block text-xs text-gray-600 mb-1">Status</label>
+                          <select
+                            value={getCurrentStatus()}
+                            onChange={(e) => {
+                              handleStatusChange(e.target.value);
+                              // If status is set to "Not Available" or "Missing" for nametag, clear the name
+                              if (isNametag && (e.target.value === "Not Available" || e.target.value === "Missing")) {
+                                handleNametagChange("");
+                              }
+                            }}
+                            className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          >
+                            <option value="Missing">Missing</option>
+                            <option value="Available">Available</option>
+                            <option value="Not Available">Not Available</option>
+                          </select>
+                        </div>
+                        {/* Price Display (only for shirts) */}
+                        {item.category === "Shirt" && (
+                          <div className="flex-1 min-w-[100px] max-w-[150px]">
+                            <label className="block text-xs text-gray-600 mb-1">Price</label>
+                            <div className="w-full text-sm border border-gray-300 rounded px-2 py-1 bg-gray-50">
+                              {item.price !== undefined && item.price !== null ? (
+                                <span className="text-gray-900 font-medium">RM {item.price.toFixed(2)}</span>
+                              ) : (
+                                <span className="text-gray-400 italic">Not set</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {!selectedCategory && !searchTerm && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+          <p className="text-blue-800">
+            Please select a category above or search for items to view your uniform items.
+          </p>
+        </div>
+      )}
+
+      {(selectedCategory || searchTerm) && displayedItems.length === 0 && (
+        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
+          <p className="text-center text-gray-500 py-8">
+            No items found. {searchTerm && "Try a different search term."}
+          </p>
+        </div>
+      )}
+
+      {/* Size Chart Modal */}
+      {sizeChartModal.isOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[95vh] flex flex-col">
+            <div className="flex justify-between items-center p-6 border-b border-gray-200 flex-shrink-0">
+              <h2 className="text-2xl font-bold text-gray-900">Size Chart - {sizeChartModal.itemName}</h2>
+              <button
+                onClick={() => setSizeChartModal({ isOpen: false, itemName: "", sizeChartUrl: "" })}
+                className="text-gray-400 hover:text-gray-600 transition text-3xl font-bold leading-none"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 flex items-center justify-center min-h-0">
+              {sizeChartModal.sizeChartUrl ? (
+                <img
+                  src={sizeChartModal.sizeChartUrl}
+                  alt={`Size chart for ${sizeChartModal.itemName}`}
+                  className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg border border-gray-200"
+                  style={{ maxHeight: 'calc(95vh - 180px)' }}
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    console.error("Failed to load size chart image:", sizeChartModal.sizeChartUrl);
+                    target.style.display = 'none';
+                    // Show error message
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'text-red-500 text-center p-4';
+                    errorDiv.textContent = 'Size chart image not found. Please contact the logistics coordinator.';
+                    target.parentElement?.appendChild(errorDiv);
+                  }}
+                />
+              ) : (
+                <div className="text-center p-8 text-gray-500">
+                  <p>Size chart not available for this item.</p>
+                  <p className="text-sm mt-2">Please contact the logistics coordinator.</p>
+                </div>
+              )}
+            </div>
+            <div className="p-6 border-t border-gray-200 text-center flex-shrink-0">
+              <button
+                onClick={() => setSizeChartModal({ isOpen: false, itemName: "", sizeChartUrl: "" })}
+                className="px-6 py-2 bg-blue-700 text-white rounded-lg hover:bg-blue-800 transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Uniform No 3 Modal */}
       {showUniformNo3Modal && (
@@ -799,7 +2669,7 @@ export default function UniformPage() {
             <form onSubmit={handleSubmitUniformNo3}>
               <div className="space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Cloth No 3</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Uniform No 3 Male</label>
                   <select
                     value={formDataNo3.clothNo3}
                     onChange={(e) => setFormDataNo3({ ...formDataNo3, clothNo3: e.target.value })}
@@ -812,7 +2682,7 @@ export default function UniformPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Pants No 3</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Uniform No 3 Female</label>
                   <select
                     value={formDataNo3.pantsNo3}
                     onChange={(e) => setFormDataNo3({ ...formDataNo3, pantsNo3: e.target.value })}
@@ -863,7 +2733,7 @@ export default function UniformPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-3">Accessories</label>
                   <div className="space-y-2">
-                    {["apulet", "integrityBadge", "goldBadge", "celBar", "beretLogoPin", "beltNo3"].map((key) => (
+                    {["apulet", "integrityBadge", "shoulderBadge", "celBar", "beretLogoPin", "beltNo3"].map((key) => (
                       <label key={key} className="flex items-center">
                         <input
                           type="checkbox"
@@ -882,7 +2752,7 @@ export default function UniformPage() {
                         <span className="text-gray-700">
                           {key === "apulet" ? "Apulet" :
                            key === "integrityBadge" ? "Integrity Badge" :
-                           key === "goldBadge" ? "Gold Badge" :
+                           key === "shoulderBadge" ? "Shoulder Badge" :
                            key === "celBar" ? "Cel Bar" :
                            key === "beretLogoPin" ? "Beret Logo Pin" :
                            "Belt No 3 (Boys Only)"}
@@ -920,10 +2790,14 @@ export default function UniformPage() {
             <form onSubmit={handleSubmitUniformNo4}>
               <div className="space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Cloth No 4</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Uniform No 4 (Cloth & Pants)</label>
                   <select
-                    value={formDataNo4.clothNo4}
-                    onChange={(e) => setFormDataNo4({ ...formDataNo4, clothNo4: e.target.value })}
+                    value={formDataNo4.clothNo4 || formDataNo4.pantsNo4 || ""}
+                    onChange={(e) => {
+                      const size = e.target.value;
+                      // Set both to the same value since they come as a pair
+                      setFormDataNo4({ ...formDataNo4, clothNo4: size, pantsNo4: size });
+                    }}
                     className="w-full border rounded-md p-2"
                   >
                     <option value="">Select Size</option>
@@ -931,19 +2805,7 @@ export default function UniformPage() {
                       <option key={size} value={size}>{size}</option>
                     ))}
                   </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Pants No 4</label>
-                  <select
-                    value={formDataNo4.pantsNo4}
-                    onChange={(e) => setFormDataNo4({ ...formDataNo4, pantsNo4: e.target.value })}
-                    className="w-full border rounded-md p-2"
-                  >
-                    <option value="">Select Size</option>
-                    {clothSizes.map((size) => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Note: Cloth and Pants come as a pair with the same size</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Boot</label>

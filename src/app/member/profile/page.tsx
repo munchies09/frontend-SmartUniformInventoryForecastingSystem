@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { ChevronUpIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import Swal from "sweetalert2";
 
 export default function ProfilePage() {
@@ -15,13 +16,105 @@ export default function ProfilePage() {
     matricNo: "",
     email: "",
     phone: "",
+    gender: "" as "Male" | "Female" | "",
   });
+  const [kompeniNumber, setKompeniNumber] = useState<number>(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      console.log("Profile page - User data:", user); // Debug log
+    fetchProfile();
+  }, [user]);
+
+  const fetchProfile = async () => {
+    if (!user?.sispaId) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+      const endpoint = `${backendUrl}/api/members/profile`;
+      
+      const res = await fetch(endpoint, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log("API Response:", data); // Debug log
+        if (data.success && data.member) {
+          const memberData = data.member;
+          console.log("Fetched profile data:", memberData); // Debug log
+          console.log("Gender from API:", memberData.gender); // Debug log
+          
+          const batch = memberData.batch || user.batch || "";
+          // Extract number from batch (e.g., "Kompeni 9" -> 9, "kompeni 8" -> 8)
+          const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          
+          setFormData({
+            sispaId: memberData.sispaId || user.sispaId || "",
+            fullName: memberData.name || user.name || "",
+            batch: batch,
+            matricNo: memberData.matricNumber || memberData.matricNo || user.matricNo || "",
+            email: memberData.email || user.email || "",
+            phone: memberData.phoneNumber || memberData.phone || user.phone || "",
+            gender: memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : ""),
+          });
+          setKompeniNumber(batchNumber);
+          
+          console.log("Set formData gender:", memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : "")); // Debug log
+          
+          if (memberData.profilePicture || user.profileImage) {
+            setProfileImage(memberData.profilePicture || user.profileImage || "");
+          }
+        } else {
+          // Fallback to user data from context
+          const batch = user.batch || "";
+          const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          setFormData({
+            sispaId: user.sispaId || "",
+            fullName: user.name || "",
+            batch: batch,
+            matricNo: user.matricNo || "",
+            email: user.email || "",
+            phone: user.phone || "",
+            gender: (user.gender as "Male" | "Female") || "",
+          });
+          setKompeniNumber(batchNumber);
+          if (user.profileImage) {
+            setProfileImage(user.profileImage);
+          }
+        }
+      } else {
+        // Fallback to user data from context
+        const batch = user.batch || "";
+        const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+        setFormData({
+          sispaId: user.sispaId || "",
+          fullName: user.name || "",
+          batch: batch,
+          matricNo: user.matricNo || "",
+          email: user.email || "",
+          phone: user.phone || "",
+          gender: (user.gender as "Male" | "Female") || "",
+        });
+        setKompeniNumber(batchNumber);
+        if (user.profileImage) {
+          setProfileImage(user.profileImage);
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching profile:", error);
+      // Fallback to user data from context
       setFormData({
         sispaId: user.sispaId || "",
         fullName: user.name || "",
@@ -29,15 +122,15 @@ export default function ProfilePage() {
         matricNo: user.matricNo || "",
         email: user.email || "",
         phone: user.phone || "",
+        gender: (user.gender as "Male" | "Female") || "",
       });
       if (user.profileImage) {
         setProfileImage(user.profileImage);
       }
-      setLoading(false);
-    } else {
+    } finally {
       setLoading(false);
     }
-  }, [user]);
+  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -101,11 +194,11 @@ export default function ProfilePage() {
           return;
         }
 
-        if (!formData.batch || formData.batch.trim() === '') {
+        if (!kompeniNumber || kompeniNumber < 1) {
           Swal.fire({
             icon: "error",
             title: "Validation Error",
-            text: "Batch is required.",
+            text: "Kompeni number is required and must be at least 1.",
             confirmButtonColor: "#1d4ed8",
           });
           setSaving(false);
@@ -144,14 +237,16 @@ export default function ProfilePage() {
       const endpoint = `${backendUrl}/api/members/profile`;
       
       // Note: sispaId cannot be changed via updateOwnProfile, so we don't send it in payload
-      // Backend expects: matricNumber, phoneNumber, profilePicture (not matricNo, phone, profileImage)
+      // Backend expects: matricNumber, phoneNumber, profilePicture, gender (not matricNo, phone, profileImage)
+      // Format batch as "Kompeni {number}"
       const payload = {
         name: formData.fullName.trim(),
         email: formData.email.trim(),
-        batch: formData.batch.trim(),
+        batch: `Kompeni ${kompeniNumber}`,
         matricNumber: formData.matricNo?.trim() || "", // Backend expects matricNumber
         phoneNumber: formData.phone?.trim() || "", // Backend expects phoneNumber
         profilePicture: profileImage || "", // Backend expects profilePicture
+        gender: formData.gender || "", // Backend expects gender
       };
       
       console.log("Updating profile:", { endpoint, payload, backendUrl }); // Debug log
@@ -230,6 +325,7 @@ export default function ProfilePage() {
           matricNo: memberData.matricNo || memberData.matricNumber || formData.matricNo?.trim() || "",
           phone: memberData.phone || memberData.phoneNumber || formData.phone?.trim() || "",
           profileImage: memberData.profileImage || memberData.profilePicture || profileImage || "",
+          gender: memberData.gender || formData.gender || "",
         };
         
         // Update AuthContext state and localStorage
@@ -279,10 +375,10 @@ export default function ProfilePage() {
 
   return (
     <div>
-      <div className="bg-white rounded-lg shadow-md border border-gray-200 p-8">
+      <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-8">
         <div className="mb-6">
-          <h2 className="text-3xl font-bold text-gray-900">My Profile</h2>
-          <p className="text-gray-600 mt-2">Manage your personal information.</p>
+          <h2 className="text-3xl font-bold text-gray-900 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>My Profile</h2>
+          <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>Manage your personal information.</p>
         </div>
 
         <form onSubmit={handleSubmit}>
@@ -349,21 +445,61 @@ export default function ProfilePage() {
                 />
               </div>
 
-              {/* BATCH */}
+              {/* KOMPENI */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  BATCH <span className="text-red-500">*</span>
+                  KOMPENI <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={formData.batch}
+                <div className="inline-flex items-center border rounded-md bg-gray-50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setKompeniNumber((prev) => Math.max(1, prev - 1))}
+                    className="px-3 py-2 hover:bg-gray-200 active:bg-gray-300 transition-colors border-r border-gray-300 flex items-center justify-center"
+                    aria-label="Decrease Kompeni number"
+                  >
+                    <ChevronDownIcon className="w-4 h-4 text-gray-700" />
+                  </button>
+                  <input
+                    type="number"
+                    min="1"
+                    value={kompeniNumber}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10);
+                      if (!isNaN(value) && value >= 1) {
+                        setKompeniNumber(value);
+                      }
+                    }}
+                    required
+                    className="w-20 px-3 py-2 bg-transparent text-center font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setKompeniNumber((prev) => Math.max(1, prev + 1))}
+                    className="px-3 py-2 hover:bg-gray-200 active:bg-gray-300 transition-colors border-l border-gray-300 flex items-center justify-center"
+                    aria-label="Increase Kompeni number"
+                  >
+                    <ChevronUpIcon className="w-4 h-4 text-gray-700" />
+                  </button>
+                </div>
+              </div>
+
+              {/* GENDER */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  GENDER <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={formData.gender}
                   onChange={(e) =>
-                    setFormData({ ...formData, batch: e.target.value })
+                    setFormData({ ...formData, gender: e.target.value as "Male" | "Female" | "" })
                   }
-                  placeholder="Kompeni 8"
                   required
                   className="w-full border rounded-md p-2 bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                >
+                  <option value="">Select Gender</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                </select>
               </div>
 
               {/* NO. MATRIC */}

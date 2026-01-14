@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { UserIcon } from "@heroicons/react/24/outline";
 
@@ -22,45 +23,96 @@ const ShirtIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+interface Announcement {
+  id?: string;
+  title: string;
+  date: string;
+  time: string;
+  location: string;
+  message?: string;
+}
+
 export default function MemberDashboard() {
   const { user } = useAuth();
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Static announcement - will be managed by admin later
-  const announcement = {
-    title: "Pengambilan Unifrom bagi Kompeni 11",
-    date: "11/11/2025",
-    time: "Jam 2000",
-    location: "Markas Kor SISPA UPM",
+  useEffect(() => {
+    fetchAnnouncements();
+  }, []);
+
+  const fetchAnnouncements = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("http://localhost:5000/api/announcements", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAnnouncements(data.announcements || []);
+      }
+    } catch (error) {
+      console.error("Error fetching announcements:", error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div>
       {/* Welcome Section */}
-      <div className="mb-6">
-        <h2 className="text-3xl font-bold text-gray-900">
+      <div className="mb-6 text-center">
+        <h2 className="text-3xl font-bold text-gray-900 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>
           Welcome, {user?.name || "Member"}!
         </h2>
-        <p className="text-gray-600 mt-2">
+        <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
           Manage your profile and uniform.
         </p>
       </div>
 
-      {/* Announcement Section */}
-      <div className="mb-6 bg-white rounded-lg border-2 border-yellow-300 p-6 shadow-sm">
-        <h3 className="text-xl font-bold text-gray-900 mb-4">Announcement</h3>
-        <div className="space-y-2">
-          <p className="text-gray-800 font-medium">{announcement.title}</p>
-          <p className="text-gray-700">
-            <span className="font-semibold">Tarikh :</span> {announcement.date}
-          </p>
-          <p className="text-gray-700">
-            <span className="font-semibold">Masa :</span> {announcement.time}
-          </p>
-          <p className="text-gray-700">
-            <span className="font-semibold">Tempat :</span> {announcement.location}
-          </p>
+      {/* Announcements Section */}
+      {loading ? (
+        <div className="mb-6 bg-white rounded-lg border-2 border-yellow-300 p-6 shadow-sm">
+          <div className="text-gray-600">Loading announcements...</div>
         </div>
-      </div>
+      ) : announcements.length > 0 ? (
+        <div className="mb-6">
+          <h3 className="text-xl font-bold text-gray-900 mb-4 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>Announcements</h3>
+          <div className="space-y-4">
+            {announcements.map((announcement) => (
+              <div
+                key={announcement.id}
+                className="bg-white rounded-lg border-2 border-yellow-300 p-6 shadow-sm"
+              >
+                <h4 className="text-lg font-bold text-gray-900 mb-3">{announcement.title}</h4>
+                <div className="space-y-2 mb-3">
+                  <p className="text-gray-700">
+                    <span className="font-semibold">Tarikh :</span> {announcement.date}
+                  </p>
+                  <p className="text-gray-700">
+                    <span className="font-semibold">Masa :</span> {announcement.time}
+                  </p>
+                  <p className="text-gray-700">
+                    <span className="font-semibold">Tempat :</span> {announcement.location}
+                  </p>
+                </div>
+                {announcement.message && (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <p className="text-gray-800 whitespace-pre-wrap">{announcement.message}</p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-6 bg-white rounded-lg border-2 border-yellow-300 p-6 shadow-sm">
+          <h3 className="text-xl font-bold text-gray-900 mb-4 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>Announcements</h3>
+          <div className="text-gray-600">No announcements at the moment.</div>
+        </div>
+      )}
 
       {/* Quick Action Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

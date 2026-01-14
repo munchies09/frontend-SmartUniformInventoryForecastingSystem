@@ -15,7 +15,6 @@ export default function SignupPage() {
     sispaId: '',
     name: '',
     email: '',
-    batch: '',
     password: '',
     confirmPassword: '',
   });
@@ -26,6 +25,20 @@ export default function SignupPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+
+    // Normalize and validate SISPA ID
+    const normalizedSispaId = form.sispaId.trim().toUpperCase();
+    
+    if (!normalizedSispaId) {
+      Swal.fire({
+        icon: "error",
+        title: "Validation Error",
+        text: "SISPA ID is required.",
+        confirmButtonColor: "#1d4ed8",
+      });
+      setLoading(false);
+      return;
+    }
 
     // Validate passwords match
     if (form.password !== form.confirmPassword) {
@@ -52,24 +65,67 @@ export default function SignupPage() {
     }
 
     try {
+      const payload = {
+        sispaId: normalizedSispaId,
+        name: form.name.trim(),
+        email: form.email.trim().toLowerCase(),
+        password: form.password,
+      };
+
+      console.log('=== SIGNUP REQUEST ===');
+      console.log('URL:', 'http://localhost:5000/api/members/signup');
+      console.log('Method:', 'POST');
+      console.log('Payload:', { ...payload, password: '***' });
+      console.log('Payload JSON:', JSON.stringify(payload, null, 2));
+
       const response = await fetch('http://localhost:5000/api/members/signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          sispaId: form.sispaId.trim(),
-          name: form.name.trim(),
-          email: form.email.trim(),
-          batch: form.batch.trim(),
-          password: form.password,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json();
 
+      console.log('=== SIGNUP RESPONSE ===');
+      console.log('Status:', response.status, response.statusText);
+      console.log('Headers:', Object.fromEntries(response.headers.entries()));
+      console.log('Response Data:', data);
+      console.log('Full Response:', JSON.stringify(data, null, 2));
+
       if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Sign up failed');
+        // More detailed error message
+        const errorMessage = data.message || data.error || 'Sign up failed';
+        console.error('=== SIGNUP FAILED ===');
+        console.error('Error Message:', errorMessage);
+        console.error('Full Error Data:', data);
+        console.error('Status Code:', response.status);
+        
+        // Check if it's a duplicate ID error
+        if (errorMessage.toLowerCase().includes('already') || errorMessage.toLowerCase().includes('exists') || errorMessage.toLowerCase().includes('duplicate')) {
+          Swal.fire({
+            icon: "error",
+            title: "ID Already Exists",
+            html: `
+              <p>The SISPA ID <strong>${normalizedSispaId}</strong> is already registered.</p>
+              <p class="mt-2 text-sm text-red-600">⚠️ Backend Error: "${errorMessage}"</p>
+              <p class="mt-2 text-xs text-gray-600">This appears to be a backend issue. The backend is checking for "Member ID" but we're sending "sispaId".</p>
+              <p class="mt-1 text-xs text-gray-500">Please check the browser console (F12) for detailed logs.</p>
+            `,
+            confirmButtonColor: "#1d4ed8",
+            width: '500px',
+          });
+        } else {
+          Swal.fire({
+            icon: "error",
+            title: "Sign Up Failed",
+            text: errorMessage,
+            confirmButtonColor: "#1d4ed8",
+          });
+        }
+        setLoading(false);
+        return;
       }
 
       // Success
@@ -87,7 +143,7 @@ export default function SignupPage() {
       Swal.fire({
         icon: "error",
         title: "Sign Up Failed",
-        text: error.message || "Failed to create account. Please try again.",
+        text: error.message || "Failed to create account. Please check your connection and try again.",
         confirmButtonColor: "#1d4ed8",
       });
     } finally {
@@ -96,8 +152,11 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-cover bg-center"
-      style={{ backgroundImage: "url('/background1.png')" }}>
+    <div className="flex min-h-screen items-center justify-center bg-cover bg-center relative"
+      style={{ backgroundImage: "url('/background1.png')", backgroundPosition: "center center", backgroundRepeat: "no-repeat" }}>
+      {/* White overlay for light shade effect */}
+      <div className="absolute inset-0 bg-white/20 pointer-events-none"></div>
+      <div className="relative z-10">
 
       <div className="flex w-[900px] h-[500px] bg-white rounded-xl shadow-2xl overflow-hidden">
 
@@ -123,10 +182,14 @@ export default function SignupPage() {
             <input 
               name="sispaId" 
               value={form.sispaId}
-              onChange={handleChange} 
+              onChange={(e) => {
+                // Auto-uppercase SISPA ID as user types
+                const value = e.target.value.toUpperCase();
+                setForm({ ...form, sispaId: value });
+              }}
               required 
               placeholder="B1184648"
-              className="w-full border rounded-md p-2 mb-3" 
+              className="w-full border rounded-md p-2 mb-3 uppercase" 
             />
 
             <label className="block font-medium">Full Name <span className="text-red-500">*</span></label>
@@ -147,16 +210,6 @@ export default function SignupPage() {
               onChange={handleChange} 
               required 
               placeholder="munirah@gmail.com"
-              className="w-full border rounded-md p-2 mb-3" 
-            />
-
-            <label className="block font-medium">Batch <span className="text-red-500">*</span></label>
-            <input 
-              name="batch" 
-              value={form.batch}
-              onChange={handleChange} 
-              required 
-              placeholder="Kompeni 8"
               className="w-full border rounded-md p-2 mb-3" 
             />
 
@@ -209,6 +262,7 @@ export default function SignupPage() {
           </form>
 
         </div>
+      </div>
       </div>
     </div>
   );
