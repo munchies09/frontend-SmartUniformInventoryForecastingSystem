@@ -280,7 +280,7 @@ export default function AnnouncementsPage() {
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                   className="w-full border rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., Pengambilan Uniform bagi Kompeni 11"
+                  placeholder="e.g., Pengambilan Uniform bagi Batch 11"
                   required
                 />
               </div>

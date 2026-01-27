@@ -1259,25 +1259,16 @@ export default function UniformInventoryPage() {
       // Save to localStorage
       localStorage.setItem("shirtPrices", JSON.stringify(updatedPrices));
       
-      // Update all inventory items for this shirt type in the backend
-      const token = localStorage.getItem("token");
-      const targetItems = inventory.filter(inv =>
-        inv.category === "Shirt" && inv.type === type
-      );
-
-      // Update all sizes for this shirt type
-      await Promise.all(
-        targetItems.map(inv =>
-          fetch(`http://localhost:5000/api/inventory/${inv.id}`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({ price: priceValue }),
-          })
-        )
-      );
+      // TODO: In production, send to backend API
+      // const token = localStorage.getItem("token");
+      // await fetch("http://localhost:5000/api/inventory/shirt-prices", {
+      //   method: "PUT",
+      //   headers: {
+      //     "Content-Type": "application/json",
+      //     Authorization: `Bearer ${token}`,
+      //   },
+      //   body: JSON.stringify({ type, price: priceValue }),
+      // });
 
       Swal.fire({
         icon: "success",
@@ -2602,7 +2593,6 @@ export default function UniformInventoryPage() {
                             quantity: 0,
                             name: itemType, // Use type as name
                             image: imageUrl, // Include image URL
-                            price: (newItem.category === "Shirt") ? getShirtPrice(itemType) : null,
                           }),
                         });
 
@@ -2631,7 +2621,6 @@ export default function UniformInventoryPage() {
                           quantity: 0,
                           name: itemType,
                           image: imageUrl, // Include image URL
-                          price: (newItem.category === "Shirt") ? getShirtPrice(itemType) : null,
                         }),
                       });
 

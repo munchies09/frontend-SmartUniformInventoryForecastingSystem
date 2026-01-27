@@ -9,6 +9,7 @@ import {
   DocumentTextIcon,
   SpeakerWaveIcon,
 } from "@heroicons/react/24/outline";
+import ReportsPage from "@/app/admin/reports/page";
 
 export default function AdminDashboard() {
   const { user } = useAuth();
@@ -108,53 +109,13 @@ export default function AdminDashboard() {
         <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>Here's an overview of your system</p>
       </div>
 
-      {/* Inventory Status Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">In Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {loading ? "..." : inventoryStatus.inStock}
-              </p>
-            </div>
-            <div className="bg-green-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Low Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {loading ? "..." : inventoryStatus.lowStock}
-              </p>
-            </div>
-            <div className="bg-yellow-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Out of Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {loading ? "..." : inventoryStatus.outOfStock}
-              </p>
-            </div>
-            <div className="bg-red-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
-          </div>
-        </div>
+      {/* Inventory Status Charts (reuse Reports page component, hide header/actions) */}
+      <div className="mt-8">
+        <ReportsPage hideHeaderActions />
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md p-6 border-2 border-orange-300">
+      <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md p-6 border-2 border-orange-300 mt-8">
         <h2 className="text-xl font-bold text-gray-900 mb-4">Quick Actions</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {quickActions.map((action) => {

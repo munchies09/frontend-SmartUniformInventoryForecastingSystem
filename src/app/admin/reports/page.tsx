@@ -24,10 +24,17 @@ interface ReportData {
   };
 }
 
-export default function ReportsPage() {
+interface ReportsPageProps {
+  hideHeaderActions?: boolean;
+}
+
+export default function ReportsPage({ hideHeaderActions = false }: ReportsPageProps) {
   const [loading, setLoading] = useState(true);
   const [reportData, setReportData] = useState<ReportData | null>(null);
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "IN_STOCK" | "LOW_STOCK" | "OUT_OF_STOCK">("ALL");
+  const [selectedChartCategory, setSelectedChartCategory] = useState<string>("Uniform No 3");
+  const [selectedChartItemType, setSelectedChartItemType] = useState<string>("");
+  const [showStatusDetails, setShowStatusDetails] = useState<boolean>(true);
 
   useEffect(() => {
     fetchReportData();
@@ -88,9 +95,17 @@ export default function ReportsPage() {
           
           inventory.forEach((item: any) => {
             const quantity = item.quantity || 0;
-            const category = item.category || "Unknown";
+            let category = item.category || "Unknown";
             const itemType = item.type || item.name || "Unknown";
             const size = item.size || "N/A";
+
+            // IMPORTANT NORMALIZATION
+            // Beret should always belong to "Uniform No 3", never "Accessories No 3"
+            const itemTypeLower = itemType.toLowerCase().trim();
+            const categoryLower = category.toLowerCase().trim();
+            if (itemTypeLower === "beret" && categoryLower === "accessories no 3") {
+              category = "Uniform No 3";
+            }
             
             // Overall status
             if (quantity > 10) {
@@ -175,31 +190,6 @@ export default function ReportsPage() {
     });
   };
 
-  const toggleCategory = (category: string) => {
-    setExpandedCategories(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(category)) {
-        newSet.delete(category);
-      } else {
-        newSet.add(category);
-      }
-      return newSet;
-    });
-  };
-
-  // Helper function to check if item type has sizes
-  const itemHasSizes = (itemType: string): boolean => {
-    const lower = itemType.toLowerCase();
-    // Items without sizes (accessories)
-    if (lower.includes("apulet") || lower.includes("badge") || lower.includes("cel bar") || 
-        lower.includes("beret logo pin") || lower.includes("belt") || lower.includes("apm tag") ||
-        lower.includes("nametag") || lower.includes("name tag")) {
-      return false;
-    }
-    // Items with sizes: cloth, pants, shoes, boot, beret, digital, inner, company
-    return true;
-  };
-
   // Helper function to get item order within category
   const getItemOrder = (category: string, itemType: string): number => {
     const lowerItemType = itemType.toLowerCase();
@@ -274,6 +264,10 @@ export default function ReportsPage() {
           const categoryData: any[] = [];
           
           Object.entries(itemTypes).forEach(([itemType, sizes]) => {
+            // CRITICAL: Filter out "Beret" from "Accessories No 3" (Beret belongs to Uniform No 3 only)
+            if (category === "Accessories No 3" && itemType.toLowerCase().trim() === "beret") {
+              return; // Skip this item
+            }
             const sizeEntries = Object.entries(sizes);
             const hasSizes = sizeEntries.some(([size]) => size !== "N/A" && size !== null);
             
@@ -353,7 +347,7 @@ export default function ReportsPage() {
     }
   };
 
-  if (loading) {
+  if (loading && !hideHeaderActions) {
     return (
       <div className="text-center py-12">
         <div className="text-lg text-gray-600">Loading reports...</div>
@@ -363,229 +357,567 @@ export default function ReportsPage() {
 
   return (
     <div className="relative min-h-screen">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>Inventory Reports</h1>
-          <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
-            View and download current inventory data
-          </p>
-        </div>
-        <div className="flex gap-3">
-          <button
-            onClick={handleGenerateReport}
-            disabled={loading}
-            className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed border-2 border-orange-400/50 hover:border-orange-500"
-          >
-            <ArrowPathIcon className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-            Refresh Data
-          </button>
-          <button
-            onClick={handleDownloadInventoryReport}
-            disabled={!reportData}
-            className="flex items-center gap-2 bg-blue-700 text-white px-4 py-2 rounded-lg hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed border-2 border-orange-400/50 hover:border-orange-500"
-          >
-            <DocumentArrowDownIcon className="w-5 h-5" />
-            Download Inventory Report
-          </button>
-        </div>
-      </div>
-
-      {/* Inventory Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">In Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {reportData?.inventoryStatus.inStock || 0}
-              </p>
-            </div>
-            <div className="bg-green-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
+      {!hideHeaderActions && (
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900 drop-shadow-md" style={{ textShadow: '0 2px 4px rgba(255,255,255,0.8)' }}>Inventory Reports</h1>
+            <p className="text-gray-700 mt-2 font-medium drop-shadow-sm" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+              View and download current inventory data
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={handleGenerateReport}
+              disabled={loading}
+              className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed border-2 border-orange-400/50 hover:border-orange-500"
+            >
+              <ArrowPathIcon className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh Data
+            </button>
+            <button
+              onClick={handleDownloadInventoryReport}
+              disabled={!reportData}
+              className="flex items-center gap-2 bg-blue-700 text-white px-4 py-2 rounded-lg hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed border-2 border-orange-400/50 hover:border-orange-500"
+            >
+              <DocumentArrowDownIcon className="w-5 h-5" />
+              Download Inventory Report
+            </button>
           </div>
         </div>
+      )}
 
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Low Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {reportData?.inventoryStatus.lowStock || 0}
-              </p>
-            </div>
-            <div className="bg-yellow-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 hover:shadow-lg transition">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Out of Stock Items</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">
-                {reportData?.inventoryStatus.outOfStock || 0}
-              </p>
-            </div>
-            <div className="bg-red-500 p-3 rounded-lg">
-              <ChartBarIcon className="w-8 h-8 text-white" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-
-      {/* Detailed Inventory by Size - Grouped by Uniform Type */}
-      {reportData && reportData.inventoryDetails && reportData.inventoryDetails.bySize && Object.keys(reportData.inventoryDetails.bySize).length > 0 && (
-        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Detailed Inventory by Size</h2>
-          <div className="space-y-0 border-l-4 border-blue-500">
-            {Object.entries(reportData.inventoryDetails.bySize)
-              .filter(([category]) => ["Uniform No 3", "Uniform No 4", "Accessories No 3", "Accessories No 4", "Shirt", "T-Shirt"].includes(category))
-              .sort(([a], [b]) => {
-                // Order: Uniform No 3, Uniform No 4, Accessories No 3, Accessories No 4, Shirt
-                const order = ["Uniform No 3", "Uniform No 4", "Accessories No 3", "Accessories No 4", "Shirt", "T-Shirt"];
-                return order.indexOf(a) - order.indexOf(b);
-              })
-              .map(([category, itemTypes]) => {
-                const isExpanded = expandedCategories.has(category);
-                // Normalize category name for display (T-Shirt -> Shirt)
-                const displayCategory = category === "T-Shirt" ? "Shirt" : category;
-                
+      {/* Pie Chart Dashboard */}
+      {reportData && (
+        <div className="bg-white/95 backdrop-blur-sm rounded-lg shadow-md border-2 border-orange-300 p-6 mb-6">
+          <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+            <ChartBarIcon className="w-6 h-6 text-blue-700" />
+            Inventory Status Charts
+          </h2>
+          
+          {/* Category Slicers */}
+          <div className="mb-6">
+            <p className="text-sm font-semibold text-gray-800 mb-3">Select Category:</p>
+            <div className="flex flex-wrap gap-2">
+              {["Uniform No 3", "Uniform No 4", "Accessories No 3", "Accessories No 4", "Shirt"].map((category) => {
+                const isActive = selectedChartCategory === category;
                 return (
-                  <div key={category} className="border-b border-gray-200">
-                    <button
-                      onClick={() => toggleCategory(category)}
-                      className={`w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 transition ${
-                        isExpanded ? "bg-gray-50" : ""
-                      }`}
-                    >
-                      <span className="font-medium text-gray-900">{displayCategory}</span>
-                      {isExpanded ? (
-                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-                      ) : (
-                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-                      )}
-                    </button>
-                    {isExpanded && (
-                      <div className="px-4 py-4 bg-white space-y-6 max-h-[600px] overflow-y-auto">
-                    {Object.entries(itemTypes)
-                      .sort(([itemTypeA, sizesA], [itemTypeB, sizesB]) => {
-                        // Get predefined order for both items
-                        const orderA = getItemOrder(category, itemTypeA);
-                        const orderB = getItemOrder(category, itemTypeB);
-                        
-                        // If both have predefined order, sort by order
-                        if (orderA !== 999 && orderB !== 999) {
-                          return orderA - orderB;
-                        }
-                        
-                        // If only one has predefined order, it comes first
-                        if (orderA !== 999) return -1;
-                        if (orderB !== 999) return 1;
-                        
-                        // If neither has predefined order, sort alphabetically
-                        return itemTypeA.localeCompare(itemTypeB);
-                      })
-                      .map(([itemType, sizes]) => {
-                      const sizeEntries = Object.entries(sizes);
-                      const hasSizes = sizeEntries.some(([size]) => size !== "N/A" && size !== null);
-                      
-                      // Sort sizes logically
-                      const sizeOrder = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "6 1/2", "6 5/8", "6 3/4", "6 7/8", "7", "7 1/8", "7 1/4", "7 3/8", "7 1/2", "7 5/8", "7 3/4", "7 7/8", "8", "8 1/8", "8 1/4", "8 3/8"];
-                      const sortedSizes = hasSizes 
-                        ? sizeEntries
-                            .filter(([size]) => size !== "N/A" && size !== null)
-                            .sort(([a], [b]) => {
-                              const aIndex = sizeOrder.indexOf(a);
-                              const bIndex = sizeOrder.indexOf(b);
-                              if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
-                              if (aIndex !== -1) return -1;
-                              if (bIndex !== -1) return 1;
-                              return a.localeCompare(b);
-                            })
-                        : sizeEntries;
-                      
-                      return (
-                        <div key={itemType} className="border-2 border-orange-200 rounded-lg p-4 bg-gray-50/80 backdrop-blur-sm">
-                          <h4 className="font-semibold text-gray-800 mb-3">{itemType}</h4>
-                          {hasSizes ? (
-                            <div className="overflow-x-auto">
-                              <table className="min-w-full divide-y divide-gray-200 bg-white rounded-lg border-2 border-orange-300">
-                                <thead className="bg-gray-100 border-b-2 border-orange-300">
-                                  <tr>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase border-r border-orange-200">Size</th>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase border-r border-orange-200">Quantity</th>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase">Status</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-orange-100">
-                                  {sortedSizes.map(([size, data]) => {
-                                    const statusColor = 
-                                      data.status === "In Stock" ? "bg-green-100 text-green-800" :
-                                      data.status === "Low Stock" ? "bg-yellow-100 text-yellow-800" :
-                                      "bg-red-100 text-red-800";
-                                    
-                                    return (
-                                      <tr key={size} className="hover:bg-orange-50/50 border-b border-orange-100">
-                                        <td className="px-4 py-2 text-sm font-medium text-gray-900 text-center border-r border-orange-200">{size}</td>
-                                        <td className="px-4 py-2 text-sm text-center font-semibold text-gray-700 border-r border-orange-200">{data.quantity}</td>
-                                        <td className="px-4 py-2 text-center">
-                                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColor}`}>
-                                            {data.status}
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <div className="overflow-x-auto">
-                              <table className="min-w-full divide-y divide-gray-200 bg-white rounded-lg border-2 border-orange-300">
-                                <thead className="bg-gray-100 border-b-2 border-orange-300">
-                                  <tr>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase border-r border-orange-200">Size</th>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase border-r border-orange-200">Quantity</th>
-                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-700 uppercase">Status</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-orange-100">
-                                  {(() => {
-                                    const totalQuantity = sizeEntries.reduce((sum, [, data]) => sum + data.quantity, 0);
-                                    const status = sizeEntries[0]?.[1].status || "N/A";
-                                    const statusColor = 
-                                      status === "In Stock" ? "bg-green-100 text-green-800" :
-                                      status === "Low Stock" ? "bg-yellow-100 text-yellow-800" :
-                                      "bg-red-100 text-red-800";
-                                    
-                                    return (
-                                      <tr className="hover:bg-orange-50/50 border-b border-orange-100">
-                                        <td className="px-4 py-2 text-sm font-medium text-gray-900 text-center border-r border-orange-200">N/A</td>
-                                        <td className="px-4 py-2 text-sm text-center font-semibold text-gray-700 border-r border-orange-200">{totalQuantity}</td>
-                                        <td className="px-4 py-2 text-center">
-                                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColor}`}>
-                                            {status}
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })()}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      );
-                      })}
-                      </div>
-                    )}
-                  </div>
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => {
+                      setSelectedChartCategory(category);
+                      setSelectedChartItemType("");
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold border-2 transition ${
+                      isActive
+                        ? "bg-blue-600 text-white border-blue-700 shadow-md"
+                        : "bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:bg-blue-50"
+                    }`}
+                  >
+                    {category}
+                  </button>
                 );
               })}
+            </div>
           </div>
+
+          {/* Pie Charts Section */}
+          {(() => {
+            const isAccessoryCategory = selectedChartCategory === "Accessories No 3" || selectedChartCategory === "Accessories No 4";
+            
+            if (isAccessoryCategory) {
+              // For accessories: Show each individual item with its stock status
+              const categoryItems = reportData.inventoryDetails.bySize[selectedChartCategory] || {};
+              const itemTypes = Object.keys(categoryItems);
+              
+              if (itemTypes.length === 0) {
+                return (
+                  <div className="text-center py-8 text-gray-500">
+                    <p>No inventory data available for {selectedChartCategory}</p>
+                  </div>
+                );
+              }
+
+              // Get each item's quantity and status (accessories have no sizes, so use "N/A" or first available size)
+              const itemsData: Array<{ name: string; quantity: number; status: string; color: string }> = [];
+              
+              itemTypes.forEach((itemType) => {
+                const sizes = categoryItems[itemType] || {};
+                // For accessories, get quantity from "N/A" or first available size entry
+                const sizeKey = sizes["N/A"] ? "N/A" : Object.keys(sizes)[0] || "N/A";
+                const itemData = sizes[sizeKey];
+                
+                if (itemData) {
+                  const quantity = itemData.quantity || 0;
+                  const status = itemData.status || (quantity > 10 ? "In Stock" : quantity > 0 ? "Low Stock" : "Out of Stock");
+                  
+                  // Determine color based on status
+                  let color = "#10b981"; // Green for In Stock
+                  if (status === "Low Stock") color = "#fbbf24"; // Yellow
+                  if (status === "Out of Stock") color = "#ef4444"; // Red
+                  
+                  itemsData.push({
+                    name: itemType,
+                    quantity,
+                    status,
+                    color
+                  });
+                }
+              });
+
+              // Sort items by status priority (Out of Stock first, then Low Stock, then In Stock)
+              itemsData.sort((a, b) => {
+                const priority = (status: string) => status === "Out of Stock" ? 0 : status === "Low Stock" ? 1 : 2;
+                return priority(a.status) - priority(b.status);
+              });
+
+              const total = itemsData.reduce((sum, item) => sum + item.quantity, 0);
+              const totalItems = itemsData.length;
+              
+              if (totalItems === 0) {
+                return (
+                  <div className="text-center py-8 text-gray-500">
+                    <p>No items available for {selectedChartCategory}</p>
+                  </div>
+                );
+              }
+
+              // Create pie data with each item as a segment
+              const pieData = itemsData.map(item => ({
+                label: item.name,
+                value: item.quantity,
+                status: item.status,
+                color: item.color,
+                percentage: total > 0 ? Math.round((item.quantity / total) * 100) : 0
+              }));
+
+              let currentAngle = -90; // Start from top
+              const outerRadius = 120;
+              const innerRadius = 60; // Donut hole
+              const centerX = 150;
+              const centerY = 150;
+              const svgSize = 300;
+
+              return (
+                <div className="flex flex-col items-center">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">{selectedChartCategory} - Status Overview</h3>
+                  <div className="flex flex-col md:flex-row items-start gap-8 w-full">
+                    <div className="relative flex-shrink-0">
+                      <svg width={svgSize} height={svgSize} className="transform">
+                        {pieData.map((segment, index) => {
+                          const percentage = (segment.value / total) * 100;
+                          const angle = (percentage / 100) * 360;
+                          const largeArcFlag = angle > 180 ? 1 : 0;
+                          
+                          // Outer arc points
+                          const x1 = centerX + outerRadius * Math.cos((currentAngle * Math.PI) / 180);
+                          const y1 = centerY + outerRadius * Math.sin((currentAngle * Math.PI) / 180);
+                          const x2 = centerX + outerRadius * Math.cos(((currentAngle + angle) * Math.PI) / 180);
+                          const y2 = centerY + outerRadius * Math.sin(((currentAngle + angle) * Math.PI) / 180);
+                          
+                          // Inner arc points
+                          const x3 = centerX + innerRadius * Math.cos(((currentAngle + angle) * Math.PI) / 180);
+                          const y3 = centerY + innerRadius * Math.sin(((currentAngle + angle) * Math.PI) / 180);
+                          const x4 = centerX + innerRadius * Math.cos((currentAngle * Math.PI) / 180);
+                          const y4 = centerY + innerRadius * Math.sin((currentAngle * Math.PI) / 180);
+                          
+                          // Donut path
+                          const pathData = [
+                            `M ${x1} ${y1}`,
+                            `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+                            `L ${x3} ${y3}`,
+                            `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${x4} ${y4}`,
+                            "Z"
+                          ].join(" ");
+
+                          // Calculate label position (middle of segment)
+                          const midAngle = currentAngle + angle / 2;
+                          const labelRadius = (outerRadius + innerRadius) / 2;
+                          const labelX = centerX + labelRadius * Math.cos((midAngle * Math.PI) / 180);
+                          const labelY = centerY + labelRadius * Math.sin((midAngle * Math.PI) / 180);
+
+                          const segmentAngle = currentAngle;
+                          currentAngle += angle;
+
+                          return (
+                            <g key={index}>
+                              <path
+                                d={pathData}
+                                fill={segment.color}
+                                stroke="white"
+                                strokeWidth="3"
+                                className="transition-opacity hover:opacity-90 cursor-pointer"
+                              />
+                              {/* Label on slice: show item name and quantity */}
+                              {percentage > 5 && (
+                                <text
+                                  x={labelX}
+                                  y={labelY}
+                                  textAnchor="middle"
+                                  dominantBaseline="middle"
+                                  className="fill-white font-bold text-xs pointer-events-none"
+                                  style={{ textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}
+                                >
+                                  <tspan x={labelX} dy="-0.3em">
+                                    {segment.label}
+                                  </tspan>
+                                  <tspan x={labelX} dy="1.1em">
+                                    {segment.value}
+                                  </tspan>
+                                </text>
+                              )}
+                            </g>
+                          );
+                        })}
+                          {/* Center text */}
+                          <text
+                            x={centerX}
+                            y={centerY - 10}
+                            textAnchor="middle"
+                            className="fill-gray-700 font-bold text-lg"
+                          >
+                            Total
+                          </text>
+                          <text
+                            x={centerX}
+                            y={centerY + 15}
+                            textAnchor="middle"
+                            className="fill-gray-900 font-bold text-2xl"
+                          >
+                            {totalItems}
+                          </text>
+                        </svg>
+                      </div>
+                      <div className="flex-1 space-y-3 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-sm font-bold text-gray-800 uppercase tracking-wide">
+                            Status Breakdown
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowStatusDetails(!showStatusDetails)}
+                            className="flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                          >
+                            <span>{showStatusDetails ? "Hide" : "Show"}</span>
+                            {showStatusDetails ? (
+                              <ChevronUpIcon className="w-4 h-4" />
+                            ) : (
+                              <ChevronDownIcon className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
+
+                        {showStatusDetails && (
+                          <>
+                            {pieData.map((segment, index) => (
+                              <div key={index} className="flex items-center justify-between p-2 hover:bg-white rounded transition">
+                                <div className="flex items-center gap-3 flex-1">
+                                  <div className="w-5 h-5 rounded" style={{ backgroundColor: segment.color }} />
+                                  <div className="flex flex-col">
+                                    <span className="text-sm font-semibold text-gray-800">{segment.label}</span>
+                                    <span className={`text-xs font-medium ${
+                                      segment.status === "In Stock" ? "text-green-700" :
+                                      segment.status === "Low Stock" ? "text-yellow-700" : "text-red-700"
+                                    }`}>
+                                      {segment.status}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                  <span className="text-sm font-bold text-gray-900 min-w-[60px] text-right">
+                                    {segment.value}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                            <div className="pt-2 border-t border-gray-300 mt-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-bold text-gray-800">Total Items</span>
+                                <span className="text-sm font-bold text-gray-900">{totalItems}</span>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+            } else {
+              // For items with sizes: Show pie chart per size for selected item type
+              const categorySizes = reportData.inventoryDetails.bySize[selectedChartCategory] || {};
+              const itemTypes = Object.keys(categorySizes);
+              
+              if (itemTypes.length === 0) {
+                return (
+                  <div className="text-center py-8 text-gray-500">
+                    <p>No inventory data available for {selectedChartCategory}</p>
+                  </div>
+                );
+              }
+
+              // Item Type Slicer
+              const selectedItemData = selectedChartItemType 
+                ? categorySizes[selectedChartItemType] 
+                : categorySizes[itemTypes[0]] || {};
+              
+              const currentItemType = selectedChartItemType || itemTypes[0];
+
+              // Get all sizes for this item type
+              const sizes = Object.keys(selectedItemData).sort((a, b) => {
+                const sizeOrder = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "6 1/2", "6 5/8", "6 3/4", "6 7/8", "7", "7 1/8", "7 1/4", "7 3/8", "7 1/2", "7 5/8", "7 3/4", "7 7/8", "8", "8 1/8", "8 1/4", "8 3/8"];
+                const aIndex = sizeOrder.indexOf(a);
+                const bIndex = sizeOrder.indexOf(b);
+                if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+                if (aIndex !== -1) return -1;
+                if (bIndex !== -1) return 1;
+                return a.localeCompare(b);
+              });
+
+              return (
+                <div>
+                  {/* Item Type Slicer */}
+                  {itemTypes.length > 1 && (
+                    <div className="mb-6">
+                      <p className="text-sm font-semibold text-gray-800 mb-3">Select Item Type:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {itemTypes.map((itemType) => {
+                          const isActive = currentItemType === itemType;
+                          return (
+                            <button
+                              key={itemType}
+                              type="button"
+                              onClick={() => setSelectedChartItemType(itemType)}
+                              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition ${
+                                isActive
+                                  ? "bg-orange-500 text-white border-orange-600 shadow-md"
+                                  : "bg-white text-gray-700 border-gray-300 hover:border-orange-400 hover:bg-orange-50"
+                              }`}
+                            >
+                              {itemType}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pie Chart showing each size individually */}
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900 mb-4">{currentItemType} - Status by Size</h3>
+                    
+                    {(() => {
+                      // Create pie data with each size as a separate segment
+                      const sizesData: Array<{ name: string; quantity: number; status: string; color: string }> = [];
+                      
+                      sizes.forEach((size) => {
+                        const sizeData = selectedItemData[size];
+                        if (!sizeData) return;
+                        
+                        const quantity = sizeData.quantity || 0;
+                        const status = sizeData.status || (quantity > 10 ? "In Stock" : quantity > 0 ? "Low Stock" : "Out of Stock");
+                        
+                        // Determine color based on status
+                        let color = "#10b981"; // Green for In Stock
+                        if (status === "Low Stock") color = "#fbbf24"; // Yellow
+                        if (status === "Out of Stock") color = "#ef4444"; // Red
+
+                        // Customize size label for certain item types
+                        const lowerType = currentItemType.toLowerCase();
+                        let displaySize = size;
+
+                        // For PVC Shoes and Boot, display size with "UK" prefix (e.g. UK 7)
+                        if (lowerType.includes("pvc shoes") || lowerType.includes("boot")) {
+                          displaySize = `UK ${size}`;
+                        }
+                        // For Beret, prefix with the word "Size" (e.g. Size 7 1/2)
+                        else if (lowerType === "beret" || lowerType.includes(" beret")) {
+                          displaySize = `Size ${size}`;
+                        }
+                        
+                        sizesData.push({
+                          name: displaySize,
+                          quantity,
+                          status,
+                          color
+                        });
+                      });
+
+                      const totalQuantity = sizesData.reduce((sum, item) => sum + item.quantity, 0);
+                      const totalSizes = sizesData.length;
+                      
+                      if (totalSizes === 0) {
+                        return (
+                          <div className="text-center py-8 text-gray-500">
+                            <p>No size data available for {currentItemType}</p>
+                          </div>
+                        );
+                      }
+                      
+                      // Create pie data with each size as a segment
+                      // Use equal angles for all sizes so zero-quantity sizes still appear
+                      const equalAngle = 360 / totalSizes;
+                      const pieData = sizesData.map(item => ({
+                        label: item.name,
+                        value: item.quantity,
+                        status: item.status,
+                        color: item.color,
+                        percentage: totalQuantity > 0 ? Math.round((item.quantity / totalQuantity) * 100) : 0,
+                        angle: equalAngle // Use equal angle for all sizes
+                      }));
+                      
+                      let currentAngle = -90; // Start from top
+                      const outerRadius = 120;
+                      const innerRadius = 60; // Donut hole
+                      const centerX = 150;
+                      const centerY = 150;
+                      const svgSize = 300;
+                      
+                      return (
+                        <div className="flex flex-col md:flex-row items-start gap-8 w-full">
+                          <div className="relative flex-shrink-0">
+                            <svg width={svgSize} height={svgSize} className="transform">
+                              {pieData.map((segment, index) => {
+                                // Use equal angle for all sizes so zero-quantity sizes appear
+                                const angle = segment.angle;
+                                const largeArcFlag = angle > 180 ? 1 : 0;
+                                
+                                // Outer arc points
+                                const x1 = centerX + outerRadius * Math.cos((currentAngle * Math.PI) / 180);
+                                const y1 = centerY + outerRadius * Math.sin((currentAngle * Math.PI) / 180);
+                                const x2 = centerX + outerRadius * Math.cos(((currentAngle + angle) * Math.PI) / 180);
+                                const y2 = centerY + outerRadius * Math.sin(((currentAngle + angle) * Math.PI) / 180);
+                                
+                                // Inner arc points
+                                const x3 = centerX + innerRadius * Math.cos(((currentAngle + angle) * Math.PI) / 180);
+                                const y3 = centerY + innerRadius * Math.sin(((currentAngle + angle) * Math.PI) / 180);
+                                const x4 = centerX + innerRadius * Math.cos((currentAngle * Math.PI) / 180);
+                                const y4 = centerY + innerRadius * Math.sin((currentAngle * Math.PI) / 180);
+                                
+                                // Donut path
+                                const pathData = [
+                                  `M ${x1} ${y1}`,
+                                  `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+                                  `L ${x3} ${y3}`,
+                                  `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${x4} ${y4}`,
+                                  "Z"
+                                ].join(" ");
+
+                                // Calculate label position (middle of segment)
+                                const midAngle = currentAngle + angle / 2;
+                                const labelRadius = (outerRadius + innerRadius) / 2;
+                                const labelX = centerX + labelRadius * Math.cos((midAngle * Math.PI) / 180);
+                                const labelY = centerY + labelRadius * Math.sin((midAngle * Math.PI) / 180);
+
+                                const segmentAngle = currentAngle;
+                                currentAngle += angle;
+
+                                return (
+                                  <g key={index}>
+                                    <path
+                                      d={pathData}
+                                      fill={segment.color}
+                                      stroke="white"
+                                      strokeWidth="3"
+                                      className="transition-opacity hover:opacity-90 cursor-pointer"
+                                    />
+                                    {/* Label on slice: show size name and quantity */}
+                                    {/* Show label for all sizes, even if quantity is 0 */}
+                                    {angle > 1 && (
+                                      <text
+                                        x={labelX}
+                                        y={labelY}
+                                        textAnchor="middle"
+                                        dominantBaseline="middle"
+                                        className="fill-white font-bold text-xs pointer-events-none"
+                                        style={{ textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}
+                                      >
+                                        <tspan x={labelX} dy="-0.3em">
+                                          {segment.label}
+                                        </tspan>
+                                        <tspan x={labelX} dy="1.1em">
+                                          {segment.value}
+                                        </tspan>
+                                      </text>
+                                    )}
+                                  </g>
+                                );
+                              })}
+                              {/* Center text */}
+                              <text
+                                x={centerX}
+                                y={centerY - 10}
+                                textAnchor="middle"
+                                className="fill-gray-700 font-bold text-lg"
+                              >
+                                Total Sizes
+                              </text>
+                              <text
+                                x={centerX}
+                                y={centerY + 15}
+                                textAnchor="middle"
+                                className="fill-gray-900 font-bold text-2xl"
+                              >
+                                {totalSizes}
+                              </text>
+                            </svg>
+                          </div>
+                          <div className="flex-1 space-y-3 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="text-sm font-bold text-gray-800 uppercase tracking-wide">
+                                Size Status Breakdown
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setShowStatusDetails(!showStatusDetails)}
+                                className="flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                              >
+                                <span>{showStatusDetails ? "Hide" : "Show"}</span>
+                                {showStatusDetails ? (
+                                  <ChevronUpIcon className="w-4 h-4" />
+                                ) : (
+                                  <ChevronDownIcon className="w-4 h-4" />
+                                )}
+                              </button>
+                            </div>
+
+                            {showStatusDetails && (
+                              <>
+                                {pieData.map((segment, index) => (
+                                  <div key={index} className="flex items-center justify-between p-2 hover:bg-white rounded transition">
+                                    <div className="flex items-center gap-3 flex-1">
+                                      <div className="w-5 h-5 rounded" style={{ backgroundColor: segment.color }} />
+                                      <div className="flex flex-col">
+                                        <span className="text-sm font-semibold text-gray-800">{segment.label}</span>
+                                        <span className={`text-xs font-medium ${
+                                          segment.status === "In Stock" ? "text-green-700" :
+                                          segment.status === "Low Stock" ? "text-yellow-700" : "text-red-700"
+                                        }`}>
+                                          {segment.status}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                      <span className="text-sm font-bold text-gray-900 min-w-[60px] text-right">{segment.value}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                                <div className="pt-2 border-t border-gray-300 mt-3">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-bold text-gray-800">Total Sizes</span>
+                                    <span className="text-sm font-bold text-gray-900">{totalSizes}</span>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              );
+            }
+          })()}
         </div>
       )}
     </div>

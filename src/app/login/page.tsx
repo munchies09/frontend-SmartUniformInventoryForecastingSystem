@@ -106,7 +106,7 @@ export default function LoginPage() {
           </div>
 
           <h2 className="text-2xl font-bold text-center text-blue-700 mb-4">
-            Sign in Kor SISPA Inventory
+            Log In UniTrack
           </h2>
 
           <form onSubmit={handleLogin}>
@@ -141,7 +141,7 @@ export default function LoginPage() {
             </div>
 
             <button className="w-full bg-blue-700 text-white py-2 rounded-md hover:bg-blue-800 transition">
-              LOGIN
+              Log In
             </button>
 
             <div className="text-center mt-3">

@@ -15,6 +15,7 @@ export default function SignupPage() {
     sispaId: '',
     name: '',
     email: '',
+    batch: '',
     password: '',
     confirmPassword: '',
   });
@@ -64,11 +65,24 @@ export default function SignupPage() {
       return;
     }
 
+    // Validate batch
+    if (!form.batch || isNaN(Number(form.batch)) || Number(form.batch) <= 0) {
+      Swal.fire({
+        icon: "error",
+        title: "Validation Error",
+        text: "Please select a valid batch number.",
+        confirmButtonColor: "#1d4ed8",
+      });
+      setLoading(false);
+      return;
+    }
+
     try {
       const payload = {
         sispaId: normalizedSispaId,
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
+        batch: Number(form.batch),
         password: form.password,
       };
 
@@ -210,6 +224,18 @@ export default function SignupPage() {
               onChange={handleChange} 
               required 
               placeholder="munirah@gmail.com"
+              className="w-full border rounded-md p-2 mb-3" 
+            />
+
+            <label className="block font-medium">Batch <span className="text-red-500">*</span></label>
+            <input 
+              name="batch" 
+              type="number" 
+              value={form.batch}
+              onChange={handleChange} 
+              required 
+              min="1"
+              placeholder="Select batch number"
               className="w-full border rounded-md p-2 mb-3" 
             />
 

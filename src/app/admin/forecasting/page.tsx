@@ -247,7 +247,7 @@ export default function ForecastingPage() {
       // Show loading alert
       Swal.fire({
         title: "Preparing Download...",
-        html: "Generating Excel file and graph image...",
+        html: "Generating Excel file...",
         allowOutsideClick: false,
         allowEscapeKey: false,
         didOpen: () => {
@@ -334,240 +334,20 @@ export default function ForecastingPage() {
       // Download Excel file
       XLSX.writeFile(wb, excelFilename);
 
-      // Draw graph directly on canvas and download (simpler approach, avoids html2canvas issues)
-      let graphDownloaded = false;
-      let graphFilename = '';
-      
-      if (graphData.length > 0 && selectedType) {
-        try {
-          graphFilename = `Forecast_Graph_${transformTypeForDisplay(selectedType).replace(/[^a-zA-Z0-9]/g, '_')}_${date}.png`;
-          
-          // Create a canvas element to draw the graph
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          
-          if (!ctx) {
-            throw new Error("Could not get canvas context");
-          }
-          
-          // Canvas dimensions
-          const padding = 60;
-          const barWidth = 40;
-          const barSpacing = 10;
-          const chartWidth = Math.max(800, graphData.length * (barWidth + barSpacing) + padding * 2);
-          const chartHeight = 500;
-          
-          canvas.width = chartWidth;
-          canvas.height = chartHeight;
-          
-          // Fill white background
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, chartWidth, chartHeight);
-          
-          // Draw title
-          ctx.fillStyle = '#111827';
-          ctx.font = 'bold 20px Arial';
-          ctx.textAlign = 'center';
-          ctx.fillText(transformTypeForDisplay(selectedType), chartWidth / 2, 30);
-          ctx.font = '14px Arial';
-          ctx.fillText('Recommended Stock by Size', chartWidth / 2, 50);
-          
-          // Calculate chart area
-          const chartAreaX = padding;
-          const chartAreaY = 80;
-          const chartAreaWidth = chartWidth - padding * 2;
-          const chartAreaHeight = chartHeight - chartAreaY - padding;
-          
-          // Find max value for scaling
-          const maxStock = Math.max(...graphData.map(d => d.recommendedStock), 1);
-          
-          // Draw Y-axis
-          ctx.strokeStyle = '#fb923c';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(chartAreaX, chartAreaY);
-          ctx.lineTo(chartAreaX, chartAreaY + chartAreaHeight);
-          ctx.stroke();
-          
-          // Draw X-axis
-          ctx.beginPath();
-          ctx.moveTo(chartAreaX, chartAreaY + chartAreaHeight);
-          ctx.lineTo(chartAreaX + chartAreaWidth, chartAreaY + chartAreaHeight);
-          ctx.stroke();
-          
-          // Draw Y-axis labels
-          ctx.fillStyle = '#2563eb';
-          ctx.font = '12px Arial';
-          ctx.textAlign = 'right';
-          for (let i = 0; i <= 4; i++) {
-            const value = Math.round((maxStock / 4) * (4 - i));
-            const y = chartAreaY + (chartAreaHeight / 4) * i;
-            ctx.fillText(value.toString(), chartAreaX - 10, y + 4);
-            // Draw grid line
-            ctx.strokeStyle = '#e5e7eb';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(chartAreaX, y);
-            ctx.lineTo(chartAreaX + chartAreaWidth, y);
-            ctx.stroke();
-          }
-          
-          // Draw bars
-          const barXStart = chartAreaX + 20;
-          graphData.forEach((item, index) => {
-            const x = barXStart + index * (barWidth + barSpacing);
-            const height = (item.recommendedStock / maxStock) * chartAreaHeight;
-            const y = chartAreaY + chartAreaHeight - height;
-            
-            // Determine bar color
-            const percentage = (item.recommendedStock / maxStock) * 100;
-            let barColor = '#eab308'; // yellow (low)
-            if (percentage > 75) {
-              barColor = '#16a34a'; // green (high)
-            } else if (percentage > 40) {
-              barColor = '#2563eb'; // blue (medium)
-            }
-            
-            // Draw bar
-            ctx.fillStyle = barColor;
-            ctx.fillRect(x, y, barWidth, height);
-            
-            // Draw border
-            ctx.strokeStyle = '#1f2937';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x, y, barWidth, height);
-            
-            // Draw value label on top of bar
-            ctx.fillStyle = '#111827';
-            ctx.font = 'bold 11px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText(item.recommendedStock.toString(), x + barWidth / 2, Math.max(y - 5, chartAreaY - 10));
-            
-            // Draw size label below
-            ctx.fillStyle = '#ea580c';
-            ctx.font = '10px Arial';
-            ctx.fillText(item.size || 'N/A', x + barWidth / 2, chartAreaY + chartAreaHeight + 15);
-            
-            // Draw forecasted demand if available
-            if (item.forecastedDemand !== undefined) {
-              ctx.fillStyle = '#6b7280';
-              ctx.font = '9px Arial';
-              ctx.fillText(`(${item.forecastedDemand})`, x + barWidth / 2, chartAreaY + chartAreaHeight + 27);
-            }
-          });
-          
-          // Try to download as PNG first, then PDF as fallback
-          try {
-            // Try PNG download
-            const pngBlob = await new Promise<Blob | null>((resolve) => {
-              canvas.toBlob((blob) => {
-                resolve(blob);
-              }, 'image/png');
-            });
-            
-            if (pngBlob) {
-              // Download PNG
-              const url = URL.createObjectURL(pngBlob);
-              const link = document.createElement('a');
-              link.href = url;
-              link.download = graphFilename;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              URL.revokeObjectURL(url);
-              graphDownloaded = true;
-            } else {
-              // PNG failed, try PDF
-              throw new Error("PNG blob creation failed, trying PDF");
-            }
-          } catch (pngError) {
-            console.warn("PNG download failed, trying PDF:", pngError);
-            
-            // Fallback to PDF
-            try {
-              const pdfFilename = graphFilename.replace('.png', '.pdf');
-              const pdf = new jsPDF('landscape', 'mm', 'a4');
-              
-              // Convert canvas to image data URL
-              const imgData = canvas.toDataURL('image/png');
-              
-              // Get PDF dimensions
-              const pdfWidth = pdf.internal.pageSize.getWidth();
-              const pdfHeight = pdf.internal.pageSize.getHeight();
-              const margin = 10;
-              
-              // Calculate scaling to fit
-              const imgAspectRatio = canvas.width / canvas.height;
-              const pdfAspectRatio = pdfWidth / pdfHeight;
-              
-              let finalWidth: number;
-              let finalHeight: number;
-              
-              if (imgAspectRatio > pdfAspectRatio) {
-                finalWidth = pdfWidth - (margin * 2);
-                finalHeight = finalWidth / imgAspectRatio;
-              } else {
-                finalHeight = pdfHeight - (margin * 2);
-                finalWidth = finalHeight * imgAspectRatio;
-              }
-              
-              // Center the image
-              const xOffset = (pdfWidth - finalWidth) / 2;
-              const yOffset = (pdfHeight - finalHeight) / 2;
-              
-              pdf.addImage(imgData, 'PNG', xOffset, yOffset, finalWidth, finalHeight);
-              pdf.save(pdfFilename);
-              
-              graphDownloaded = true;
-              graphFilename = pdfFilename;
-            } catch (pdfError) {
-              console.error("PDF download also failed:", pdfError);
-              graphDownloaded = false;
-              
-              // Last resort: try direct data URL download
-              try {
-                const dataUrl = canvas.toDataURL('image/png');
-                const link = document.createElement('a');
-                link.href = dataUrl;
-                link.download = graphFilename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                graphDownloaded = true;
-              } catch (finalError) {
-                console.error("All download methods failed:", finalError);
-                graphDownloaded = false;
-              }
-            }
-          }
-        } catch (graphError: any) {
-          console.error("Error creating graph canvas:", graphError);
-          graphDownloaded = false;
-        }
-      }
-
       Swal.fire({
-        icon: graphDownloaded || (selectedType && graphData.length === 0) ? "success" : "warning",
-        title: graphDownloaded || (selectedType && graphData.length === 0) ? "Download Complete!" : "Partial Download",
+        icon: "success",
+        title: "Download Complete!",
         html: `
           <div style="text-align: left;">
             <p style="margin-bottom: 10px;">Successfully downloaded:</p>
             <ul style="margin-left: 20px; margin-top: 5px;">
               <li>✅ Excel file: <strong>${excelFilename}</strong></li>
-              ${selectedType && graphData.length > 0 
-                ? graphDownloaded
-                  ? `<li>✅ Graph ${graphFilename.endsWith('.pdf') ? 'PDF' : 'PNG image'}: <strong>${graphFilename}</strong></li>`
-                  : `<li>❌ Graph download: <span style="color: #dc2626;">Failed (tried PNG, PDF, and direct download)</span></li>`
-                : '<li style="color: #666;">ℹ️ Graph: Not available (no graph displayed)</li>'}
             </ul>
             <p style="margin-top: 10px; color: #666; font-size: 14px;">${recommendations.length} recommendations across ${Object.keys(groupedByType).length} type(s)</p>
-            ${!graphDownloaded && selectedType && graphData.length > 0
-              ? '<p style="margin-top: 10px; color: #dc2626; font-size: 13px;">Note: Graph download failed. The Excel file contains all the data.</p>'
-              : ''}
           </div>
         `,
         confirmButtonColor: "#1d4ed8",
-        timer: graphDownloaded ? 3000 : 5000,
+        timer: 3000,
         timerProgressBar: true,
       });
     } catch (error: any) {
@@ -675,7 +455,7 @@ export default function ForecastingPage() {
             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ArrowDownTrayIcon className="w-5 h-5" />
-            Download Excel
+            Forecast Data
           </button>
           <button
             onClick={fetchRecommendations}

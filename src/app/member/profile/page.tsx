@@ -18,7 +18,7 @@ export default function ProfilePage() {
     phone: "",
     gender: "" as "Male" | "Female" | "",
   });
-  const [kompeniNumber, setKompeniNumber] = useState<number>(1);
+  const [batchNumber, setBatchNumber] = useState<number>(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -57,8 +57,8 @@ export default function ProfilePage() {
           console.log("Gender from API:", memberData.gender); // Debug log
           
           const batch = memberData.batch || user.batch || "";
-          // Extract number from batch (e.g., "Kompeni 9" -> 9, "kompeni 8" -> 8)
-          const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          // Extract number from batch (e.g., "Batch 9" -> 9, "batch 8" -> 8)
+          const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
           
           setFormData({
             sispaId: memberData.sispaId || user.sispaId || "",
@@ -69,7 +69,7 @@ export default function ProfilePage() {
             phone: memberData.phoneNumber || memberData.phone || user.phone || "",
             gender: memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : ""),
           });
-          setKompeniNumber(batchNumber);
+          setBatchNumber(extractedBatchNumber);
           
           console.log("Set formData gender:", memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : "")); // Debug log
           
@@ -79,7 +79,7 @@ export default function ProfilePage() {
         } else {
           // Fallback to user data from context
           const batch = user.batch || "";
-          const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
           setFormData({
             sispaId: user.sispaId || "",
             fullName: user.name || "",
@@ -89,7 +89,7 @@ export default function ProfilePage() {
             phone: user.phone || "",
             gender: (user.gender as "Male" | "Female") || "",
           });
-          setKompeniNumber(batchNumber);
+          setBatchNumber(extractedBatchNumber);
           if (user.profileImage) {
             setProfileImage(user.profileImage);
           }
@@ -97,7 +97,7 @@ export default function ProfilePage() {
       } else {
         // Fallback to user data from context
         const batch = user.batch || "";
-        const batchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+        const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
         setFormData({
           sispaId: user.sispaId || "",
           fullName: user.name || "",
@@ -194,11 +194,11 @@ export default function ProfilePage() {
           return;
         }
 
-        if (!kompeniNumber || kompeniNumber < 1) {
+        if (!batchNumber || batchNumber < 1) {
           Swal.fire({
             icon: "error",
             title: "Validation Error",
-            text: "Kompeni number is required and must be at least 1.",
+            text: "Batch number is required and must be at least 1.",
             confirmButtonColor: "#1d4ed8",
           });
           setSaving(false);
@@ -210,7 +210,7 @@ export default function ProfilePage() {
       Swal.fire({
         icon: "error",
         title: "Error",
-        text: "User information not found. Please login again.",
+        text: "User information not found. Please log in again.",
         confirmButtonColor: "#1d4ed8",
       });
       setSaving(false);
@@ -223,7 +223,7 @@ export default function ProfilePage() {
         Swal.fire({
           icon: "error",
           title: "Authentication Error",
-          text: "Please login again.",
+          text: "Please log in again.",
           confirmButtonColor: "#1d4ed8",
         });
         setSaving(false);
@@ -238,11 +238,11 @@ export default function ProfilePage() {
       
       // Note: sispaId cannot be changed via updateOwnProfile, so we don't send it in payload
       // Backend expects: matricNumber, phoneNumber, profilePicture, gender (not matricNo, phone, profileImage)
-      // Format batch as "Kompeni {number}"
+      // Format batch as "Batch {number}"
       const payload = {
         name: formData.fullName.trim(),
         email: formData.email.trim(),
-        batch: `Kompeni ${kompeniNumber}`,
+        batch: `Batch ${batchNumber}`,
         matricNumber: formData.matricNo?.trim() || "", // Backend expects matricNumber
         phoneNumber: formData.phone?.trim() || "", // Backend expects phoneNumber
         profilePicture: profileImage || "", // Backend expects profilePicture
@@ -445,28 +445,28 @@ export default function ProfilePage() {
                 />
               </div>
 
-              {/* KOMPENI */}
+              {/* BATCH */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  KOMPENI <span className="text-red-500">*</span>
+                  BATCH <span className="text-red-500">*</span>
                 </label>
                 <div className="inline-flex items-center border rounded-md bg-gray-50 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setKompeniNumber((prev) => Math.max(1, prev - 1))}
+                    onClick={() => setBatchNumber((prev) => Math.max(1, prev - 1))}
                     className="px-3 py-2 hover:bg-gray-200 active:bg-gray-300 transition-colors border-r border-gray-300 flex items-center justify-center"
-                    aria-label="Decrease Kompeni number"
+                    aria-label="Decrease Batch number"
                   >
                     <ChevronDownIcon className="w-4 h-4 text-gray-700" />
                   </button>
                   <input
                     type="number"
                     min="1"
-                    value={kompeniNumber}
+                    value={batchNumber}
                     onChange={(e) => {
                       const value = parseInt(e.target.value, 10);
                       if (!isNaN(value) && value >= 1) {
-                        setKompeniNumber(value);
+                        setBatchNumber(value);
                       }
                     }}
                     required
@@ -474,9 +474,9 @@ export default function ProfilePage() {
                   />
                   <button
                     type="button"
-                    onClick={() => setKompeniNumber((prev) => Math.max(1, prev + 1))}
+                    onClick={() => setBatchNumber((prev) => Math.max(1, prev + 1))}
                     className="px-3 py-2 hover:bg-gray-200 active:bg-gray-300 transition-colors border-l border-gray-300 flex items-center justify-center"
-                    aria-label="Increase Kompeni number"
+                    aria-label="Increase Batch number"
                   >
                     <ChevronUpIcon className="w-4 h-4 text-gray-700" />
                   </button>

@@ -81,10 +81,19 @@ export default function MemberPage() {
           Authorization: `Bearer ${token}`,
         },
       });
+      
+      // Check if response is OK before parsing JSON
+      if (!membersRes.ok) {
+        const errorText = await membersRes.text();
+        console.error("Failed to fetch members:", membersRes.status, membersRes.statusText, errorText);
+        setLoading(false);
+        return;
+      }
+      
       const membersData = await membersRes.json();
       
       if (!membersData.success) {
-        console.error("Failed to fetch members");
+        console.error("Failed to fetch members:", membersData.message || "Unknown error");
         setLoading(false);
         return;
       }
@@ -144,24 +153,30 @@ export default function MemberPage() {
       setMembers(membersWithData);
     } catch (error) {
       console.error("Error fetching members:", error);
+      // Log more details if available
+      if (error instanceof Error) {
+        console.error("Error message:", error.message);
+        console.error("Error stack:", error.stack);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // Group members by batch (normalize "Kompeni X" format, case-insensitive)
+  // Group members by batch (normalize "Batch X" or "Kompeni X" format, case-insensitive)
   const membersByBatch = members.reduce((acc, member) => {
     const batch = member.profile.batch || "Unassigned";
     
-    // Normalize batch: extract number from "Kompeni X" or "kompeni X" format
-    // Convert to "Kompeni {number}" format for consistent grouping
+    // Normalize batch: extract number from "Batch X", "batch X", "Kompeni X", or "kompeni X" format
+    // Convert to "Batch {number}" format for consistent grouping
+    // Handle backward compatibility with "Kompeni" format
     let normalizedBatch = "Unassigned";
     
-    if (batch && batch.toLowerCase().includes("kompeni")) {
+    if (batch && (batch.toLowerCase().includes("batch") || batch.toLowerCase().includes("kompeni"))) {
       const numberMatch = batch.match(/\d+/);
       if (numberMatch) {
         const number = numberMatch[0];
-        normalizedBatch = `Kompeni ${number}`;
+        normalizedBatch = `Batch ${number}`;
       } else {
         normalizedBatch = batch; // Keep original if no number found
       }
@@ -200,9 +215,15 @@ export default function MemberPage() {
   );
 
   const handleDeleteMember = async (sispaId: string, name: string) => {
+    // Different behavior based on view mode
+    const isUniformView = viewMode === "uniform";
+    const deleteType = isUniformView ? "uniform data" : "member";
+    
     const result = await Swal.fire({
       title: "Are you sure?",
-      text: `Do you want to delete member "${name}" (${sispaId})? This action cannot be undone.`,
+      text: isUniformView
+        ? `Do you want to delete uniform data for "${name}" (${sispaId})? This will only delete their uniform information, not their profile.`
+        : `Do you want to delete member "${name}" (${sispaId})? This will delete all their data including profile and uniform. This action cannot be undone.`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#dc2626",
@@ -215,38 +236,70 @@ export default function MemberPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch(`http://localhost:5000/api/members/${sispaId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      
+      if (isUniformView) {
+        // Delete only uniform data
+        const res = await fetch(`http://localhost:5000/api/members/${sispaId}/uniform`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
 
-      const data = await res.json();
-      if (data.success) {
-        Swal.fire({
-          icon: "success",
-          title: "Deleted!",
-          text: `Member "${name}" has been deleted successfully`,
-          confirmButtonColor: "#1d4ed8",
-          timer: 2000,
-        });
-        // Refresh member list
-        await fetchAllMembers();
+        const data = await res.json();
+        if (data.success) {
+          Swal.fire({
+            icon: "success",
+            title: "Deleted!",
+            text: `Uniform data for "${name}" has been deleted successfully. Their profile remains intact.`,
+            confirmButtonColor: "#1d4ed8",
+            timer: 2000,
+          });
+          // Refresh member list
+          await fetchAllMembers();
+        } else {
+          Swal.fire({
+            icon: "error",
+            title: "Error",
+            text: data.message || "Failed to delete uniform data",
+            confirmButtonColor: "#1d4ed8",
+          });
+        }
       } else {
-        Swal.fire({
-          icon: "error",
-          title: "Error",
-          text: data.message || "Failed to delete member",
-          confirmButtonColor: "#1d4ed8",
+        // Delete entire member (profile + uniform)
+        const res = await fetch(`http://localhost:5000/api/members/${sispaId}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         });
+
+        const data = await res.json();
+        if (data.success) {
+          Swal.fire({
+            icon: "success",
+            title: "Deleted!",
+            text: `Member "${name}" has been deleted successfully`,
+            confirmButtonColor: "#1d4ed8",
+            timer: 2000,
+          });
+          // Refresh member list
+          await fetchAllMembers();
+        } else {
+          Swal.fire({
+            icon: "error",
+            title: "Error",
+            text: data.message || "Failed to delete member",
+            confirmButtonColor: "#1d4ed8",
+          });
+        }
       }
     } catch (error) {
-      console.error("Error deleting member:", error);
+      console.error(`Error deleting ${deleteType}:`, error);
       Swal.fire({
         icon: "error",
         title: "Error",
-        text: "Failed to delete member",
+        text: `Failed to delete ${deleteType}`,
         confirmButtonColor: "#1d4ed8",
       });
     }
@@ -284,12 +337,12 @@ export default function MemberPage() {
     try {
       const token = localStorage.getItem("token");
       if (!token) {
-        Swal.fire({
-          icon: "error",
-          title: "Authentication Error",
-          text: "Please login again.",
-          confirmButtonColor: "#1d4ed8",
-        });
+      Swal.fire({
+        icon: "error",
+        title: "Authentication Error",
+        text: "Please log in again.",
+        confirmButtonColor: "#1d4ed8",
+      });
         return;
       }
 
@@ -380,17 +433,15 @@ export default function MemberPage() {
     if (itemLower.includes("cel bar")) return 24;
     if (itemLower.includes("beret logo pin") || (itemLower.includes("beret") && itemLower.includes("pin"))) return 25;
     if (itemLower.includes("belt no 3")) return 26;
-    if (itemLower.includes("nametag") || itemLower.includes("name tag")) {
-      if (itemLower.includes("no 3") || itemLower.includes("name tag no 3")) return 27;
-      return 27; // Default nametag in Accessories No 3
+    if (itemLower.includes("nametag no 3") || itemLower.includes("name tag no 3")) {
+      return 27; // Nametag No 3 in Accessories No 3
     }
     
     // Accessories No 4 items (order: 31-40)
     if (itemLower.includes("apm tag")) return 31;
     if (itemLower.includes("belt no 4")) return 32;
-    if (itemLower.includes("nametag") || itemLower.includes("name tag")) {
-      if (itemLower.includes("no 4") || itemLower.includes("name tag no 4")) return 33;
-      return 33; // Default nametag in Accessories No 4
+    if (itemLower.includes("nametag no 4") || itemLower.includes("name tag no 4")) {
+      return 33; // Nametag No 4 in Accessories No 4
     }
     
     // Shirt items (order: 41-50)
@@ -432,10 +483,10 @@ export default function MemberPage() {
           hardcodedItems.push("Uniform No 4", "Boot");
           break;
         case "Accessories No 3":
-          hardcodedItems.push("Apulet", "Integrity Badge", "Shoulder Badge", "Cel Bar", "Beret Logo Pin", "Belt No 3", "Nametag");
+          hardcodedItems.push("Apulet", "Integrity Badge", "Shoulder Badge", "Cel Bar", "Beret Logo Pin", "Belt No 3", "Nametag No 3");
           break;
         case "Accessories No 4":
-          hardcodedItems.push("APM Tag", "Belt No 4", "Nametag");
+          hardcodedItems.push("APM Tag", "Belt No 4", "Nametag No 4");
           break;
         case "Shirt":
           hardcodedItems.push("Digital Shirt", "Company Shirt", "Inner APM Shirt");
@@ -471,9 +522,9 @@ export default function MemberPage() {
       case "Uniform No 4":
         return ["Uniform No 4", "Boot"];
       case "Accessories No 3":
-        return ["Apulet", "Integrity Badge", "Shoulder Badge", "Cel Bar", "Beret Logo Pin", "Belt No 3", "Nametag"];
+        return ["Apulet", "Integrity Badge", "Shoulder Badge", "Cel Bar", "Beret Logo Pin", "Belt No 3", "Nametag No 3"];
       case "Accessories No 4":
-        return ["APM Tag", "Belt No 4", "Nametag"];
+        return ["APM Tag", "Belt No 4", "Nametag No 4"];
       case "Shirt":
         return ["Digital Shirt", "Company Shirt", "Inner APM Shirt"];
       default:
@@ -578,7 +629,15 @@ export default function MemberPage() {
           if ((type.includes("nametag no 3") || type.includes("name tag no 3")) && !type.includes("no 4")) {
             uniformNo3.nametag = item.notes || "";
           }
-          uniformNo3.items.push({ type: item.type, size, notes: item.notes });
+          uniformNo3.items.push({ 
+            type: item.type, 
+            size, 
+            notes: item.notes,
+            status: item.status,
+            missingCount: item.missingCount,
+            category: item.category,
+            receivedDate: item.receivedDate
+          });
         } else {
           // Accessories (no size or null size)
           // Handle both old category ("Uniform No 3" with accessories) and new category ("Accessories No 3")
@@ -606,7 +665,15 @@ export default function MemberPage() {
           }
           if (type.includes("boot")) uniformNo4.boot = size;
           // Nametag should NOT be in hasSize block - it's an accessory
-          uniformNo4.items.push({ type: item.type, size, notes: item.notes });
+          uniformNo4.items.push({ 
+            type: item.type, 
+            size, 
+            notes: item.notes,
+            status: item.status,
+            missingCount: item.missingCount,
+            category: item.category,
+            receivedDate: item.receivedDate
+          });
         } else {
           // Accessories (no size or null size)
           // Handle both old category ("Uniform No 4" with accessories) and new category ("Accessories No 4")
@@ -620,14 +687,29 @@ export default function MemberPage() {
             uniformNo4.nametag = item.notes || "";
           }
           // Add all accessories to items array so they show up in the table
-          uniformNo4.items.push({ type: item.type, size: null, notes: item.notes, status: item.status });
+          uniformNo4.items.push({ 
+            type: item.type, 
+            size: null, 
+            notes: item.notes, 
+            status: item.status,
+            missingCount: item.missingCount,
+            category: item.category,
+            receivedDate: item.receivedDate
+          });
         }
       } else if (category.includes("t-shirt") || category.includes("tshirt") || category === "shirt") {
         if (hasSize) {
           if (type.includes("digital")) tShirt.digital = size;
           if (type.includes("inner apm")) tShirt.innerApm = size;
           if (type.includes("company")) tShirt.company = size;
-          tShirt.items.push({ type: item.type, size });
+          tShirt.items.push({ 
+            type: item.type, 
+            size,
+            status: item.status,
+            missingCount: item.missingCount,
+            category: item.category,
+            receivedDate: item.receivedDate
+          });
         }
       }
     });
@@ -801,16 +883,9 @@ export default function MemberPage() {
         const itemsByType = new Map<string, UniformItem>();
         allUniformItems.forEach(item => {
           const normalizedType = normalizeTypeForMatch(item.type);
-          // For nametag, we need to handle both No 3 and No 4
-          if (normalizedType === "Nametag") {
-            const category = item.category?.toLowerCase() || "";
-            if (category.includes("accessories no 3")) {
-              itemsByType.set("Nametag (No 3)", item);
-            } else if (category.includes("accessories no 4")) {
-              itemsByType.set("Nametag (No 4)", item);
-            } else {
-              itemsByType.set("Nametag", item);
-            }
+          // For nametag, map to "Nametag No 3" or "Nametag No 4" based on category
+          if (normalizedType === "Nametag No 3" || normalizedType === "Nametag No 4") {
+            itemsByType.set(normalizedType, item);
           } else {
             itemsByType.set(normalizedType, item);
           }
@@ -818,14 +893,29 @@ export default function MemberPage() {
 
         // For each item type column, add the data
         uniqueItems.forEach((itemType) => {
-          // Handle nametag specially - check both No 3 and No 4
+          // Match by exact item type (handles "Nametag No 3" and "Nametag No 4" separately)
           let item: UniformItem | undefined;
           
-          if (itemType === "Nametag") {
-            // Try to find nametag (could be No 3 or No 4)
-            item = itemsByType.get("Nametag") || 
-                   itemsByType.get("Nametag (No 3)") || 
-                   itemsByType.get("Nametag (No 4)");
+          if (itemType === "Nametag No 3") {
+            // Find nametag from Accessories No 3
+            item = allUniformItems.find(uniItem => {
+              const typeLower = uniItem.type?.toLowerCase() || "";
+              const categoryLower = uniItem.category?.toLowerCase() || "";
+              return (categoryLower.includes("accessories no 3") || categoryLower.includes("uniform no 3")) &&
+                     (typeLower.includes("nametag no 3") || 
+                      typeLower.includes("name tag no 3") ||
+                      (typeLower.includes("nametag") && !typeLower.includes("no 4")));
+            });
+          } else if (itemType === "Nametag No 4") {
+            // Find nametag from Accessories No 4
+            item = allUniformItems.find(uniItem => {
+              const typeLower = uniItem.type?.toLowerCase() || "";
+              const categoryLower = uniItem.category?.toLowerCase() || "";
+              return (categoryLower.includes("accessories no 4") || categoryLower.includes("uniform no 4")) &&
+                     (typeLower.includes("nametag no 4") || 
+                      typeLower.includes("name tag no 4") ||
+                      (typeLower.includes("nametag") && !typeLower.includes("no 3")));
+            });
           } else {
             item = itemsByType.get(itemType);
           }
@@ -837,10 +927,32 @@ export default function MemberPage() {
             // Format: "Size | Status | Date" or "Size\nStatus\nDate"
             const size = displaySize(item);
             const status = item.status || "Not Available";
-            const missingCount = status === "Missing" && item.missingCount !== undefined && item.missingCount > 0
-              ? ` (${item.missingCount})`
-              : "";
-            const statusText = `${status}${missingCount}`;
+
+            // Normalize missingCount from both camelCase and snake_case,
+            // and always show a number when status is "Missing"
+            let missingCount: number | null = null;
+            if (typeof item.missingCount === "number") {
+              missingCount = item.missingCount;
+            } else if (typeof (item as any).missing_count === "number") {
+              missingCount = (item as any).missing_count;
+            } else if (typeof item.missingCount === "string") {
+              const parsed = parseInt(item.missingCount, 10);
+              if (!isNaN(parsed)) missingCount = parsed;
+            } else if (typeof (item as any).missing_count === "string") {
+              const parsed = parseInt((item as any).missing_count, 10);
+              if (!isNaN(parsed)) missingCount = parsed;
+            }
+
+            // If backend marks status as Missing but doesn't send a valid count,
+            // default to 1 so admin can still see "Missing (1)"
+            if (status === "Missing" && (missingCount === null || missingCount === undefined || isNaN(Number(missingCount)))) {
+              missingCount = 1;
+            }
+
+            const statusText =
+              status === "Missing" && missingCount !== null && missingCount !== undefined
+                ? `Missing (${missingCount})`
+                : status;
             const date = status === "Available" && item.receivedDate
               ? formatDate(item.receivedDate)
               : status === "Available" 
@@ -982,63 +1094,6 @@ export default function MemberPage() {
             Uniform Information
           </button>
         </div>
-
-
-        {/* Uniform Category Buttons - Only visible when uniform view is active */}
-        {viewMode === "uniform" && (
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={() => setSelectedUniformCategory("Uniform No 3")}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                selectedUniformCategory === "Uniform No 3"
-                  ? "bg-green-700 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              Uniform No 3
-            </button>
-            <button
-              onClick={() => setSelectedUniformCategory("Uniform No 4")}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                selectedUniformCategory === "Uniform No 4"
-                  ? "bg-green-700 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              Uniform No 4
-            </button>
-            <button
-              onClick={() => setSelectedUniformCategory("Accessories No 3")}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                selectedUniformCategory === "Accessories No 3"
-                  ? "bg-green-700 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              Accessories No 3
-            </button>
-            <button
-              onClick={() => setSelectedUniformCategory("Accessories No 4")}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                selectedUniformCategory === "Accessories No 4"
-                  ? "bg-green-700 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              Accessories No 4
-            </button>
-            <button
-              onClick={() => setSelectedUniformCategory("Shirt")}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                selectedUniformCategory === "Shirt"
-                  ? "bg-green-700 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              Shirt
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Grouped by Batch with Dropdown */}
@@ -1136,17 +1191,18 @@ export default function MemberPage() {
                                     </th>
                                   ));
                                 } else {
-                                  // If no category selected, show all items from all categories
-                                  // Remove duplicates (e.g., "Nametag" appears in both Accessories No 3 and No 4)
-                                  const allCategoryItems = [
-                                    ...getCategoryItems("Uniform No 3"),
-                                    ...getCategoryItems("Uniform No 4"),
-                                    ...getCategoryItems("Accessories No 3"),
-                                    ...getCategoryItems("Accessories No 4"),
-                                    ...getCategoryItems("Shirt"),
-                                  ];
-                                  // Remove duplicates while preserving order
-                                  let uniqueItems = Array.from(new Set(allCategoryItems));
+                                // If no category selected, show all items from all categories
+                                // Keep both "Nametag No 3" and "Nametag No 4" as separate columns
+                                const allCategoryItems = [
+                                  ...getCategoryItems("Uniform No 3"),
+                                  ...getCategoryItems("Uniform No 4"),
+                                  ...getCategoryItems("Accessories No 3"),
+                                  ...getCategoryItems("Accessories No 4"),
+                                  ...getCategoryItems("Shirt"),
+                                ];
+                                // Remove duplicates while preserving order
+                                // CRITICAL: Don't remove "Nametag No 3" and "Nametag No 4" as duplicates - they are different items
+                                let uniqueItems = Array.from(new Set(allCategoryItems));
                                   // CRITICAL: Sort all items using display order function to ensure consistent ordering
                                   uniqueItems.sort((a, b) => {
                                     const orderA = getItemDisplayOrder(a);
@@ -1176,15 +1232,8 @@ export default function MemberPage() {
                           .flatMap((member) => {
                           const uniformData = member.uniform ? parseUniformData(member.uniform.items) : null;
                           
-                          // Filter uniform items by selected category
+                          // Show all uniform items (no category filtering)
                           let allUniformItems = member.uniform ? member.uniform.items : [];
-                          
-                          if (viewMode === "uniform" && selectedUniformCategory) {
-                            allUniformItems = allUniformItems.filter((item) => {
-                              const itemCategory = getItemCategory(item);
-                              return itemCategory === selectedUniformCategory;
-                            });
-                          }
                           
                           if (viewMode === "profile") {
                             return [
@@ -1230,7 +1279,7 @@ export default function MemberPage() {
                                   <button
                                     onClick={() => handleDeleteMember(member.profile.sispaId, member.profile.name)}
                                     className="p-2 text-red-600 hover:bg-red-50 rounded transition"
-                                    title="Delete member"
+                                    title="Delete entire member"
                                   >
                                     <TrashIcon className="w-5 h-5" />
                                   </button>
@@ -1240,31 +1289,27 @@ export default function MemberPage() {
                           }
 
                           // For uniform view, create one row per member with columns for each item type
-                          // Use predefined category items (matching user uniform structure)
-                          const categoryItems = selectedUniformCategory 
-                            ? getCategoryItems(selectedUniformCategory)
-                            : (() => {
-                                // If no category selected, show all items from all categories
-                                // Remove duplicates (e.g., "Nametag" appears in both Accessories No 3 and No 4)
-                                const allItems = [
-                                  ...getCategoryItems("Uniform No 3"),
-                                  ...getCategoryItems("Uniform No 4"),
-                                  ...getCategoryItems("Accessories No 3"),
-                                  ...getCategoryItems("Accessories No 4"),
-                                  ...getCategoryItems("Shirt"),
-                                ];
-                                // Remove duplicates while preserving order
-                                let uniqueItems = Array.from(new Set(allItems));
-                                
-                                // CRITICAL: Sort all items using display order function to ensure consistent ordering
-                                uniqueItems.sort((a, b) => {
-                                  const orderA = getItemDisplayOrder(a);
-                                  const orderB = getItemDisplayOrder(b);
-                                  return orderA - orderB;
-                                });
-                                
-                                return uniqueItems;
-                              })();
+                          // Always show all items from all categories
+                          // Keep both "Nametag No 3" and "Nametag No 4" as separate columns
+                          const allItems = [
+                            ...getCategoryItems("Uniform No 3"),
+                            ...getCategoryItems("Uniform No 4"),
+                            ...getCategoryItems("Accessories No 3"),
+                            ...getCategoryItems("Accessories No 4"),
+                            ...getCategoryItems("Shirt"),
+                          ];
+                          // Remove duplicates while preserving order
+                          // CRITICAL: Don't remove "Nametag No 3" and "Nametag No 4" as duplicates - they are different items
+                          let uniqueItems = Array.from(new Set(allItems));
+                          
+                          // CRITICAL: Sort all items using display order function to ensure consistent ordering
+                          uniqueItems.sort((a, b) => {
+                            const orderA = getItemDisplayOrder(a);
+                            const orderB = getItemDisplayOrder(b);
+                            return orderA - orderB;
+                          });
+                          
+                          const categoryItems = uniqueItems;
 
                           const displaySize = (item: any) => {
                             // Handle null, undefined, empty string, or "N/A" - accessories don't have sizes
@@ -1317,17 +1362,16 @@ export default function MemberPage() {
                             if (typeLower.includes("belt no 3")) return "Belt No 3";
                             if (typeLower.includes("belt no 4")) return "Belt No 4";
                             if (typeLower.includes("apm tag")) return "APM Tag";
-                            // CRITICAL: Handle nametag by checking category to determine No 3 vs No 4
+                            // CRITICAL: Handle nametag - return "Nametag No 3" or "Nametag No 4" based on type
                             if (typeLower.includes("nametag") || typeLower.includes("name tag")) {
-                              // Check the item's category to determine if it's No 3 or No 4
-                              // This will be handled in the display logic by filtering by category
                               if (typeLower.includes("no 4") || typeLower.includes("name tag no 4")) {
-                                return "Nametag";
+                                return "Nametag No 4";
                               } else if (typeLower.includes("no 3") || typeLower.includes("name tag no 3")) {
-                                return "Nametag";
+                                return "Nametag No 3";
                               }
-                              // For backward compatibility, check category
-                              return "Nametag";
+                              // For backward compatibility, check category from the item context
+                              // This will be handled in the display logic
+                              return "Nametag No 3"; // Default fallback
                             }
                             if (typeLower.includes("digital shirt")) return "Digital Shirt";
                             if (typeLower.includes("company shirt")) return "Company Shirt";
@@ -1347,48 +1391,29 @@ export default function MemberPage() {
                               <td className="px-4 py-3 text-sm text-gray-900">{member.profile.sispaId}</td>
                               <td className="px-4 py-3 text-sm text-gray-900">{member.profile.name}</td>
                               {categoryItems.map((itemType) => {
-                                // CRITICAL: For nametag, filter by category to match the correct one
+                                // Match item by type (handles both "Nametag No 3" and "Nametag No 4" separately)
                                 let item: UniformItem | undefined;
                                 
-                                if (itemType === "Nametag") {
-                                  // For nametag, we need to match by both type AND category
-                                  // If viewing "Accessories No 3", only match nametag from "Accessories No 3"
-                                  // If viewing "Accessories No 4", only match nametag from "Accessories No 4"
-                                  const expectedCategory = selectedUniformCategory === "Accessories No 3" 
-                                    ? "Accessories No 3" 
-                                    : selectedUniformCategory === "Accessories No 4" 
-                                    ? "Accessories No 4"
-                                    : null; // If no category selected, try to match by type name
-                                  
-                                  if (expectedCategory) {
-                                    // Find nametag in the expected category
-                                    item = allUniformItems.find(uniItem => {
-                                      const typeLower = uniItem.type?.toLowerCase() || "";
-                                      const categoryLower = uniItem.category?.toLowerCase() || "";
-                                      const expectedCategoryLower = expectedCategory.toLowerCase();
-                                      
-                                      // Match by category first
-                                      if (categoryLower !== expectedCategoryLower) return false;
-                                      
-                                      // Then match by type (No 3 or No 4)
-                                      if (expectedCategory === "Accessories No 3") {
-                                        return (typeLower.includes("nametag no 3") || 
-                                                typeLower.includes("name tag no 3") ||
-                                                (typeLower.includes("nametag") && !typeLower.includes("no 4")));
-                                      } else if (expectedCategory === "Accessories No 4") {
-                                        return (typeLower.includes("nametag no 4") || 
-                                                typeLower.includes("name tag no 4") ||
-                                                (typeLower.includes("nametag") && !typeLower.includes("no 3")));
-                                      }
-                                      return false;
-                                    });
-                                  } else {
-                                    // No category selected - try to find any nametag (for backward compatibility)
-                                    item = allUniformItems.find(uniItem => {
-                                      const normalizedType = normalizeTypeForMatch(uniItem.type);
-                                      return normalizedType === "Nametag";
-                                    });
-                                  }
+                                if (itemType === "Nametag No 3") {
+                                  // Find nametag from Accessories No 3
+                                  item = allUniformItems.find(uniItem => {
+                                    const typeLower = uniItem.type?.toLowerCase() || "";
+                                    const categoryLower = uniItem.category?.toLowerCase() || "";
+                                    return (categoryLower.includes("accessories no 3") || categoryLower.includes("uniform no 3")) &&
+                                           (typeLower.includes("nametag no 3") || 
+                                            typeLower.includes("name tag no 3") ||
+                                            (typeLower.includes("nametag") && !typeLower.includes("no 4")));
+                                  });
+                                } else if (itemType === "Nametag No 4") {
+                                  // Find nametag from Accessories No 4
+                                  item = allUniformItems.find(uniItem => {
+                                    const typeLower = uniItem.type?.toLowerCase() || "";
+                                    const categoryLower = uniItem.category?.toLowerCase() || "";
+                                    return (categoryLower.includes("accessories no 4") || categoryLower.includes("uniform no 4")) &&
+                                           (typeLower.includes("nametag no 4") || 
+                                            typeLower.includes("name tag no 4") ||
+                                            (typeLower.includes("nametag") && !typeLower.includes("no 3")));
+                                  });
                                 } else {
                                   // For non-nametag items, use the existing matching logic
                                   const normalizedType = normalizeTypeForMatch(itemType);
@@ -1412,28 +1437,44 @@ export default function MemberPage() {
                                   );
                                 }
 
-                                const itemStatus = item.status || "Not Available";
-                                const itemDate = item.receivedDate || (itemStatus === "Available" ? new Date().toISOString() : undefined);
-                                
-                                // Get missing count - check multiple possible field names
-                                // Backend might send missingCount (camelCase) or missing_count (snake_case)
-                                const missingCount = item.missingCount !== undefined && item.missingCount !== null 
-                                  ? item.missingCount 
-                                  : (item as any).missing_count !== undefined && (item as any).missing_count !== null
-                                  ? (item as any).missing_count
-                                  : null;
-                                
-                                // Debug: Log when status is Missing to check if missingCount is present
-                                // Remove this debug log after confirming backend sends missingCount
-                                if (itemStatus === "Missing") {
-                                  console.log(`[DEBUG] Missing item ${itemType} for ${member.profile.name}:`, {
-                                    status: itemStatus,
-                                    missingCount: item.missingCount,
-                                    missing_count: (item as any).missing_count,
-                                    hasMissingCount: missingCount !== null,
-                                    fullItem: item
-                                  });
+                                const status = item.status ?? "Available";
+                                const itemDate = item.receivedDate || (status === "Available" ? new Date().toISOString() : undefined);
+
+                                // Read missingCount directly from API response (camelCase or snake_case)
+                                // Backend sends missingCount as a number when status is "Missing"
+                                let missingCount: number | null = null;
+                                if (typeof item.missingCount === "number") {
+                                  missingCount = item.missingCount;
+                                } else if (typeof (item as any).missing_count === "number") {
+                                  missingCount = (item as any).missing_count;
+                                } else if (typeof item.missingCount === "string") {
+                                  // Handle string numbers (just in case)
+                                  const parsed = parseInt(item.missingCount, 10);
+                                  if (!isNaN(parsed)) {
+                                    missingCount = parsed;
+                                  }
+                                } else if (typeof (item as any).missing_count === "string") {
+                                  const parsed = parseInt((item as any).missing_count, 10);
+                                  if (!isNaN(parsed)) {
+                                    missingCount = parsed;
+                                  }
                                 }
+                                
+                                // Debug log to verify data
+                                if (status === "Missing") {
+                                  console.log(`[Admin Member] Item ${item.type}: status="${status}", missingCount=${missingCount}, raw missingCount=${item.missingCount}, type=${typeof item.missingCount}`);
+                                }
+
+                                // For Missing status, always show a number.
+                                // If backend didn't send a valid count, default to 1 so admin can still see "Missing (1)".
+                                if (status === "Missing" && (missingCount === null || missingCount === undefined || isNaN(Number(missingCount)))) {
+                                  missingCount = 1;
+                                }
+
+                                const displayStatus =
+                                  status === "Missing" && missingCount !== null && missingCount !== undefined
+                                    ? `Missing (${missingCount})`
+                                    : status;
 
                                 return (
                                   <td key={itemType} className="px-4 py-3 text-center text-sm text-gray-900">
@@ -1448,17 +1489,13 @@ export default function MemberPage() {
                                       {/* Status */}
                                       <div>
                                         <span className={`text-xs font-medium px-2 py-1 rounded inline-block ${
-                                          itemStatus === "Available" 
+                                          status === "Available" 
                                             ? "bg-green-100 text-green-800" 
-                                            : itemStatus === "Missing"
+                                            : status === "Missing"
                                               ? "bg-red-100 text-red-800"
                                               : "bg-yellow-100 text-yellow-800"
                                         }`}>
-                                          {itemStatus}
-                                          {/* Show missing count if status is Missing and count exists */}
-                                          {itemStatus === "Missing" && missingCount !== null && missingCount !== undefined && missingCount > 0 && (
-                                            <span className="ml-1 font-bold">({missingCount})</span>
-                                          )}
+                                          {displayStatus}
                                         </span>
                                       </div>
                                       {/* Date */}
@@ -1482,21 +1519,10 @@ export default function MemberPage() {
                           ];
 
                           // No uniform items - still show row but with N/A in all item columns
-                          // Use predefined category items
-                          const categoryItemsNoData = selectedUniformCategory 
-                            ? getCategoryItems(selectedUniformCategory)
-                            : (() => {
-                                // Remove duplicates (e.g., "Nametag" appears in both Accessories No 3 and No 4)
-                                const allItems = [
-                                  ...getCategoryItems("Uniform No 3"),
-                                  ...getCategoryItems("Uniform No 4"),
-                                  ...getCategoryItems("Accessories No 3"),
-                                  ...getCategoryItems("Accessories No 4"),
-                                  ...getCategoryItems("Shirt"),
-                                ];
-                                // Remove duplicates while preserving order
-                                return Array.from(new Set(allItems));
-                              })();
+                          // Always show all items from all categories
+                          // Keep both "Nametag No 3" and "Nametag No 4" as separate columns
+                          // Reuse the same categoryItems from above to avoid duplicate declaration
+                          const categoryItemsNoData = categoryItems;
 
                           return [
                             <tr key={member.profile.sispaId} className="border-b border-orange-100 hover:bg-orange-50/30">
@@ -1510,9 +1536,7 @@ export default function MemberPage() {
                                 ))
                               ) : (
                                 <td className="px-4 py-3 text-sm text-gray-400" colSpan={1}>
-                                  {selectedUniformCategory 
-                                    ? `No ${selectedUniformCategory} data` 
-                                    : "No uniform data"}
+                                  No uniform data
                                 </td>
                               )}
                               <td className="px-4 py-3 text-center">

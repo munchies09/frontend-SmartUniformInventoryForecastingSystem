@@ -41,9 +41,9 @@ export default function AdminLayout({
 
   return (
     <ProtectedRoute allowedRoles={["admin"]}>
-      <div className="min-h-screen bg-cover bg-center bg-fixed relative" style={{ backgroundImage: "url('/tauliah.JPG')", backgroundPosition: "center center", backgroundRepeat: "no-repeat" }}>
+      <div className="min-h-screen bg-cover bg-center bg-fixed relative" style={{ backgroundImage: "url('/background.png')", backgroundPosition: "center center", backgroundRepeat: "no-repeat" }}>
         {/* White overlay for light shade effect */}
-        <div className="fixed inset-0 bg-white/60 pointer-events-none"></div>
+        <div className="fixed inset-0 bg-white/65 pointer-events-none"></div>
         {/* Additional overlay for better readability */}
         <div className="fixed inset-0 bg-gray-900/10 pointer-events-none"></div>
         
@@ -54,8 +54,8 @@ export default function AdminLayout({
           <div className="flex flex-col h-full">
             {/* Title with Toggle Button */}
             <div className="p-6 border-b border-blue-600/50 flex items-center justify-between">
-              <div>
-                <h1 className="text-xl font-bold text-white">Smart Uniform System</h1>
+              <div className="flex-1 min-w-0">
+                <h1 className="text-lg font-bold text-white leading-tight">UniTrack: Smart Uniform Inventory Forecasting System</h1>
                 <p className="text-sm font-medium text-blue-100 mt-1">Admin</p>
               </div>
               <button
@@ -90,7 +90,7 @@ export default function AdminLayout({
               })}
             </nav>
 
-            {/* User Info & Logout */}
+            {/* User Info & Log out */}
             <div className="p-4 border-t border-blue-600/50">
               <div className="mb-3 px-4">
                 <p className="text-sm font-medium text-white">{user?.name || "Admin"}</p>
@@ -101,7 +101,7 @@ export default function AdminLayout({
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-blue-100 hover:bg-blue-700/50 hover:text-white transition border border-blue-600/30 hover:border-orange-400/50"
               >
                 <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                <span className="font-medium">Logout</span>
+                <span className="font-medium">Log out</span>
               </button>
             </div>
           </div>

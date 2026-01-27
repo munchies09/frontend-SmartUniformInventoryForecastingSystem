@@ -67,9 +67,8 @@ export default function UniformPage() {
     sizeChartUrl: "",
   });
   
-  // Shirt prices (will be updated by admin later via API)
-  // TODO: Fetch shirt prices from API endpoint (e.g., GET /api/inventory/shirt-prices or similar)
-  // For now, prices are null and will show "Not set" in the UI
+  // Shirt prices - fetched from API response (backend includes price in each shirt item)
+  // Fallback to localStorage if API doesn't have prices
   const [shirtPrices, setShirtPrices] = useState<{
     digitalShirt: number | null;
     companyShirt: number | null;
@@ -79,10 +78,25 @@ export default function UniformPage() {
     companyShirt: null,
     innerApmShirt: null,
   });
+  
+  // Track if prices failed to load
+  const [priceLoadError, setPriceLoadError] = useState<boolean>(false);
+  const [isRefreshingPrices, setIsRefreshingPrices] = useState<boolean>(false);
+  
+  // Store original API items with prices for reference
+  const [apiItemsWithPrices, setApiItemsWithPrices] = useState<any[]>([]);
 
   // Status tracking for items with sizes (independent of size - for "no planning" indication)
   // Status can be "Available", "Missing", or "Not Available" regardless of size
   const [itemStatus, setItemStatus] = useState<Record<string, "Available" | "Missing" | "Not Available">>({});
+  
+  // Store missingCount for each item (keyed by category|type|size, e.g. "Accessories No 3|Belt No 3|N/A")
+  const [itemMissingCount, setItemMissingCount] = useState<Record<string, number>>({});
+
+  // Helper to build missingCount key (category + type + size)
+  const getMissingKey = (category: string, type: string, size?: string | null) => {
+    return `${category}|${type}|${size ?? "N/A"}`;
+  };
   
   const [formDataNo3, setFormDataNo3] = useState<UniformNo3Data>({
     clothNo3: "",
@@ -227,46 +241,178 @@ export default function UniformPage() {
   };
 
   // Fetch inventory items and size charts from inventory API
-  useEffect(() => {
-    const fetchInventory = async () => {
-      try {
-        const token = localStorage.getItem("token");
-        if (!token) return;
+  const fetchInventory = async (showLoading = false) => {
+    try {
+      if (showLoading) {
+        setIsRefreshingPrices(true);
+      }
+      const token = localStorage.getItem("token");
+      if (!token) {
+        if (showLoading) setIsRefreshingPrices(false);
+        return;
+      }
 
-        // Fetch inventory to get items, size chart URLs, and quantities
-        const res = await fetch('http://localhost:5000/api/inventory', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+      // Fetch inventory to get items, size chart URLs, and quantities
+      const res = await fetch('http://localhost:5000/api/inventory', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        
+        // DEBUG: Log raw API response structure
+        console.log("🔍 DEBUG: Raw inventory API response structure:", {
+          hasData: !!data,
+          hasSuccess: !!data.success,
+          hasInventory: !!data.inventory,
+          inventoryLength: data.inventory?.length,
+          firstItem: data.inventory?.[0] ? {
+            keys: Object.keys(data.inventory[0]),
+            category: data.inventory[0].category,
+            type: data.inventory[0].type,
+            hasPrice: 'price' in data.inventory[0],
+            price: data.inventory[0].price,
+            priceType: typeof data.inventory[0].price
+          } : null
         });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.inventory) {
-            // Store all inventory items
-            setInventoryItems(data.inventory || []);
+        
+        if (data.success && data.inventory) {
+          // Store all inventory items
+          setInventoryItems(data.inventory || []);
+          
+          // DEBUG: Log shirt items specifically
+          const shirtItemsInResponse = data.inventory.filter((item: any) => {
+            const category = item.category?.toLowerCase() || "";
+            return category === "shirt" || category === "t-shirt";
+          });
+          
+          if (shirtItemsInResponse.length > 0) {
+            console.log("🔍 DEBUG: Shirt items from API response:", shirtItemsInResponse.map((item: any) => ({
+              category: item.category,
+              type: item.type,
+              size: item.size,
+              price: item.price,
+              priceType: typeof item.price,
+              hasPriceField: 'price' in item,
+              allKeys: Object.keys(item)
+            })));
+          } else {
+            console.warn("⚠️ No shirt items found in inventory API response");
+          }
+          
+          // Extract shirt prices from inventory (price is stored directly in UniformInventory)
+          // Price is per shirt type (same for all sizes of the same type)
+          const extractedPrices: {
+            digitalShirt: number | null;
+            companyShirt: number | null;
+            innerApmShirt: number | null;
+          } = {
+            digitalShirt: null,
+            companyShirt: null,
+            innerApmShirt: null,
+          };
+          
+          // Extract prices from inventory items (price is already in item.price field)
+          data.inventory.forEach((item: any) => {
+            const category = item.category?.toLowerCase() || "";
+            const type = item.type?.toLowerCase() || "";
             
-            // Group by category-type and get size chart URL
-            const chartMap: Record<string, string> = {};
-            data.inventory.forEach((item: any) => {
-              if (item.sizeChart) {
-                const key = `${item.category}-${item.type}`;
-                if (!chartMap[key]) {
-                  chartMap[key] = item.sizeChart;
+            // Check if this is a shirt item
+            if (category === "shirt" || category === "t-shirt") {
+              // DEBUG: Log each shirt item to see if price exists
+              if (item.price === undefined || item.price === null) {
+                console.warn(`⚠️ Shirt item found but price is missing:`, {
+                  category: item.category,
+                  type: item.type,
+                  size: item.size,
+                  hasPriceField: 'price' in item,
+                  priceValue: item.price,
+                  allFields: Object.keys(item)
+                });
+              }
+              
+              // Check if this is a shirt item and has a price
+              if (item.price !== undefined && item.price !== null) {
+                // Price is stored directly in UniformInventory.price
+                // Same price for all sizes of the same type, so we can take any size
+                if (type === "digital shirt" && extractedPrices.digitalShirt === null) {
+                  extractedPrices.digitalShirt = item.price;
+                  console.log(`✅ Found price for Digital Shirt: ${item.price}`);
+                } else if (type === "company shirt" && extractedPrices.companyShirt === null) {
+                  extractedPrices.companyShirt = item.price;
+                  console.log(`✅ Found price for Company Shirt: ${item.price}`);
+                } else if (type === "inner apm shirt" && extractedPrices.innerApmShirt === null) {
+                  extractedPrices.innerApmShirt = item.price;
+                  console.log(`✅ Found price for Inner APM Shirt: ${item.price}`);
                 }
               }
-            });
-            setSizeCharts(chartMap);
+            }
+          });
+          
+          // Update shirt prices from inventory (only if prices are found)
+          if (extractedPrices.digitalShirt !== null || extractedPrices.companyShirt !== null || extractedPrices.innerApmShirt !== null) {
+            setShirtPrices(prev => ({
+              digitalShirt: extractedPrices.digitalShirt !== null ? extractedPrices.digitalShirt : prev.digitalShirt,
+              companyShirt: extractedPrices.companyShirt !== null ? extractedPrices.companyShirt : prev.companyShirt,
+              innerApmShirt: extractedPrices.innerApmShirt !== null ? extractedPrices.innerApmShirt : prev.innerApmShirt,
+            }));
+            setPriceLoadError(false); // Clear error if prices found
+            console.log("💰 Shirt prices fetched from inventory (UniformInventory.price):", extractedPrices);
+          } else {
+            // Check if there are shirt items but no prices
+            const hasShirtItems = shirtItemsInResponse.length > 0;
+            if (hasShirtItems) {
+              setPriceLoadError(true); // Set error flag if shirt items exist but no prices
+              console.error("❌ CRITICAL: No shirt prices found in inventory API response!");
+              console.error("   This means the backend is NOT including the 'price' field in GET /api/inventory");
+              console.error("   Please check BACKEND_INVENTORY_INCLUDE_SHIRT_PRICES.md for backend implementation");
+              console.error("   Backend must:");
+              console.error("   1. Ensure 'price' field exists in UniformInventory model/schema");
+              console.error("   2. Include 'price' in database query (MongoDB: .select('+price'), SQL: include in SELECT)");
+              console.error("   3. Include 'price' field in API response for ALL items");
+              console.error("   4. For shirt items: actual price value");
+              console.error("   5. For non-shirt items: null");
+            } else {
+              setPriceLoadError(false); // No error if no shirt items exist
+            }
           }
+          
+          // Group by category-type and get size chart URL
+          const chartMap: Record<string, string> = {};
+          data.inventory.forEach((item: any) => {
+            if (item.sizeChart) {
+              const key = `${item.category}-${item.type}`;
+              if (!chartMap[key]) {
+                chartMap[key] = item.sizeChart;
+              }
+            }
+          });
+          setSizeCharts(chartMap);
         }
-      } catch (error) {
-        console.error("Error fetching inventory:", error);
-        // Silently fail - inventory is optional for backward compatibility
+      } else {
+        console.error("Failed to fetch inventory:", res.status, res.statusText);
+        if (showLoading) {
+          setPriceLoadError(true);
+        }
       }
-    };
+    } catch (error) {
+      console.error("Error fetching inventory:", error);
+      if (showLoading) {
+        setPriceLoadError(true);
+      }
+      // Silently fail - inventory is optional for backward compatibility
+    } finally {
+      if (showLoading) {
+        setIsRefreshingPrices(false);
+      }
+    }
+  };
 
+  useEffect(() => {
     if (user) {
-      fetchInventory();
+      fetchInventory(false);
     }
   }, [user]);
 
@@ -296,61 +442,138 @@ export default function UniformPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const url = 'http://localhost:5000/api/members/uniform';
+      const url = 'http://localhost:5000/api/uniforms/my-uniform';
+      
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
       
+      // Check HTTP status first
+      if (!res.ok) {
+        // 404 means no uniform data exists - this is a valid state, not an error
+        if (res.status === 404) {
+          // This is expected for first-time users - no uniform data exists yet
+          console.log("ℹ️ No uniform data found (404) - this is normal for first-time users");
+          setLoading(false);
+          return;
+        }
+        // For other errors, try to parse and log
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          try {
+            const errorData = await res.json();
+            console.error("❌ HTTP Error fetching uniform:", res.status, errorData);
+          } catch (parseError) {
+            console.error("❌ HTTP Error fetching uniform:", res.status, res.statusText);
+          }
+        } else {
+          console.error("❌ HTTP Error fetching uniform:", res.status, res.statusText);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Parse successful response
       const contentType = res.headers.get("content-type");
       let data;
       
       if (contentType && contentType.includes("application/json")) {
         try {
-        data = await res.json();
+          data = await res.json();
         } catch (parseError) {
-          console.error("JSON parse error:", parseError, "Status:", res.status);
+          console.error("❌ JSON parse error:", parseError, "Status:", res.status);
           setLoading(false);
           return;
         }
       } else {
-        console.error("Non-JSON response received");
-        setLoading(false);
-        return;
-      }
-      
-      // Check HTTP status first
-      if (!res.ok) {
-        // 404 means no uniform data exists - this is a valid state, not an error
-        if (res.status === 404) {
-          // Silently handle - no data exists, state will remain empty
-          setLoading(false);
-          return;
-        }
-        // For other errors, log but don't show alert
-        console.error("HTTP Error:", res.status, data);
+        console.error("❌ Non-JSON response received");
         setLoading(false);
         return;
       }
       
       if (data.success && data.uniform && data.uniform.items) {
         const items = data.uniform.items || [];
+        
+        // Store API items with prices for reference
+        setApiItemsWithPrices(items);
+        
+        // Extract shirt prices from API response (backend now includes price in each shirt item)
+        const extractedPrices: {
+          digitalShirt: number | null;
+          companyShirt: number | null;
+          innerApmShirt: number | null;
+        } = {
+          digitalShirt: null,
+          companyShirt: null,
+          innerApmShirt: null,
+        };
+        
+        items.forEach((item: any) => {
+          if (item.category === "Shirt" && item.price !== undefined && item.price !== null) {
+            const type = item.type?.toLowerCase() || "";
+            if (type === "digital shirt") {
+              extractedPrices.digitalShirt = item.price;
+            } else if (type === "company shirt") {
+              extractedPrices.companyShirt = item.price;
+            } else if (type === "inner apm shirt") {
+              extractedPrices.innerApmShirt = item.price;
+            }
+          }
+        });
+        
+        // Update shirt prices from API response (only if prices are found)
+        // If API has prices, use them; otherwise keep existing prices (from localStorage or previous fetch)
+        if (extractedPrices.digitalShirt !== null || extractedPrices.companyShirt !== null || extractedPrices.innerApmShirt !== null) {
+          setShirtPrices(prev => ({
+            digitalShirt: extractedPrices.digitalShirt !== null ? extractedPrices.digitalShirt : prev.digitalShirt,
+            companyShirt: extractedPrices.companyShirt !== null ? extractedPrices.companyShirt : prev.companyShirt,
+            innerApmShirt: extractedPrices.innerApmShirt !== null ? extractedPrices.innerApmShirt : prev.innerApmShirt,
+          }));
+          console.log("💰 Shirt prices fetched from API:", extractedPrices);
+        }
+        
         const uniformNo3Data = parseUniformNo3FromItems(items);
         const uniformNo4Data = parseUniformNo4FromItems(items);
         const tShirtData = parseTShirtFromItems(items);
         
         // Initialize itemStatus from API data (for items with status field)
         const initialStatus: Record<string, "Available" | "Missing" | "Not Available"> = {};
+        const initialMissingCount: Record<string, number> = {};
         items.forEach((item: any) => {
           if (item.status) {
             const category = item.category || "";
             const type = item.type || "";
-            const statusKey = `${category}-${type}`;
+           
+            const statusKey = `${category}-${type}`; // KEEP for itemStatus (status is independent of size)
             initialStatus[statusKey] = item.status;
-          }
+
+            // FIX: missingCount MUST use category|type|size key
+            const sizeValue = item.size ?? "N/A";
+            const missingKey = getMissingKey(category, type, sizeValue);
+
+            if (item.status === "Missing") {
+              if (item.missingCount !== undefined && item.missingCount !== null) {
+               initialMissingCount[missingKey] = item.missingCount;
+               console.log(`📋 Loaded missingCount for ${type} [${sizeValue}]: ${item.missingCount}`);
+             } else {
+               const previousCount = itemMissingCount[missingKey];
+               if (previousCount !== undefined && previousCount !== null) {
+               initialMissingCount[missingKey] = previousCount;
+                console.log(`📋 Preserved previous missingCount for ${type} [${sizeValue}]: ${previousCount}`);
+                }
+              }
+             } else if (item.status === "Available") {
+                // Optional: preserve for future Missing display
+                if (item.missingCount !== undefined && item.missingCount !== null) {
+                initialMissingCount[missingKey] = item.missingCount;
+                }
+              }
+           }
         });
         setItemStatus(initialStatus);
+        setItemMissingCount(initialMissingCount);
         
         if (uniformNo3Data) {
           setUniformNo3(uniformNo3Data);
@@ -512,27 +735,127 @@ export default function UniformPage() {
   const convertNo3ToBackendItems = (data: UniformNo3Data): any[] => {
     const items: any[] = [];
     if (data.clothNo3) {
-      items.push({ category: "Uniform No 3", type: "Uniform No 3 Male", size: data.clothNo3, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if size is selected
+      const statusKey = `Uniform No 3-Uniform No 3 Male`;
+      const status = itemStatus[statusKey] || (data.clothNo3 ? "Available" : "Missing");
+      items.push({ 
+        category: "Uniform No 3", 
+        type: "Uniform No 3 Male", 
+        size: data.clothNo3, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
     if (data.pantsNo3) {
-      items.push({ category: "Uniform No 3", type: "Uniform No 3 Female", size: data.pantsNo3, quantity: 1 });
+      const statusKey = `Uniform No 3-Uniform No 3 Female`;
+      const status = itemStatus[statusKey] || (data.pantsNo3 ? "Available" : "Missing");
+      items.push({ 
+        category: "Uniform No 3", 
+        type: "Uniform No 3 Female", 
+        size: data.pantsNo3, 
+        quantity: 1,
+        status: status
+      });
     }
     if (data.pvcShoes) {
-      items.push({ category: "Uniform No 3", type: "PVC Shoes", size: `${data.pvcShoes}`, quantity: 1 });
+      const statusKey = `Uniform No 3-PVC Shoes`;
+      const status = itemStatus[statusKey] || (data.pvcShoes ? "Available" : "Missing");
+      items.push({ 
+        category: "Uniform No 3", 
+        type: "PVC Shoes", 
+        size: `${data.pvcShoes}`, 
+        quantity: 1,
+        status: status
+      });
     }
     if (data.beret) {
-      items.push({ category: "Uniform No 3", type: "Beret", size: data.beret, quantity: 1 });
+      const statusKey = `Uniform No 3-Beret`;
+      const status = itemStatus[statusKey] || (data.beret ? "Available" : "Missing");
+      items.push({ 
+        category: "Uniform No 3", 
+        type: "Beret", 
+        size: data.beret, 
+        quantity: 1,
+        status: status
+      });
     }
+    // CRITICAL: Accessories don't have sizes, use null to match database
+    // Backend accepts null, "", or "N/A" for accessories and normalizes all to null
+    // Database stores size: null for accessories
+    const accessorySize = null;
+    
     if (data.nametag) {
-      items.push({ category: "Accessories No 3", type: "Nametag No 3", size: null, quantity: 1, notes: data.nametag });
+      items.push({ category: "Accessories No 3", type: "Nametag No 3", size: accessorySize, quantity: 1, notes: data.nametag });
     }
-    // Accessories use null for size (not empty string)
-    if (data.accessories.apulet) items.push({ category: "Accessories No 3", type: "Apulet", size: null, quantity: 1 });
-    if (data.accessories.integrityBadge) items.push({ category: "Accessories No 3", type: "Integrity Badge", size: null, quantity: 1 });
-    if (data.accessories.shoulderBadge) items.push({ category: "Accessories No 3", type: "Shoulder Badge", size: null, quantity: 1 });
-    if (data.accessories.celBar) items.push({ category: "Accessories No 3", type: "Cel Bar", size: null, quantity: 1 });
-    if (data.accessories.beretLogoPin) items.push({ category: "Accessories No 3", type: "Beret Logo Pin", size: null, quantity: 1 });
-    if (data.accessories.beltNo3) items.push({ category: "Accessories No 3", type: "Belt No 3", size: null, quantity: 1 });
+    // Accessories use null for size (matches database storage)
+    // FIX: Include accessories if boolean is true (user owns it) OR if itemStatus has status (user changed status)
+    // This ensures items with status "Missing" are sent to backend even if boolean is false
+    const apuletStatusKey = `Accessories No 3-Apulet`;
+    if (data.accessories.apulet || itemStatus[apuletStatusKey]) {
+      const status = itemStatus[apuletStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Apulet", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const integrityBadgeStatusKey = `Accessories No 3-Integrity Badge`;
+    if (data.accessories.integrityBadge || itemStatus[integrityBadgeStatusKey]) {
+      const status = itemStatus[integrityBadgeStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Integrity Badge", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const shoulderBadgeStatusKey = `Accessories No 3-Shoulder Badge`;
+    if (data.accessories.shoulderBadge || itemStatus[shoulderBadgeStatusKey]) {
+      const status = itemStatus[shoulderBadgeStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Shoulder Badge", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const celBarStatusKey = `Accessories No 3-Cel Bar`;
+    if (data.accessories.celBar || itemStatus[celBarStatusKey]) {
+      const status = itemStatus[celBarStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Cel Bar", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const beretLogoPinStatusKey = `Accessories No 3-Beret Logo Pin`;
+    if (data.accessories.beretLogoPin || itemStatus[beretLogoPinStatusKey]) {
+      const status = itemStatus[beretLogoPinStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Beret Logo Pin", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const beltNo3StatusKey = `Accessories No 3-Belt No 3`;
+    if (data.accessories.beltNo3 || itemStatus[beltNo3StatusKey]) {
+      const status = itemStatus[beltNo3StatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 3", 
+        type: "Belt No 3", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
     return items;
   };
 
@@ -542,30 +865,134 @@ export default function UniformPage() {
     // Use clothNo4 if available, otherwise use pantsNo4 (they should be the same since they come as a pair)
     const uniformNo4Size = data.clothNo4 || data.pantsNo4;
     if (uniformNo4Size) {
-      items.push({ category: "Uniform No 4", type: "Uniform No 4", size: uniformNo4Size, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if size is selected
+      // Try multiple key formats to ensure we find the status
+      const statusKey1 = `Uniform No 4-Uniform No 4`;
+      const statusKey2 = `Uniform No 4-Cloth No 4`;
+      const statusKey3 = `Uniform No 4-Pants No 4`;
+      const statusFromState = itemStatus[statusKey1] || itemStatus[statusKey2] || itemStatus[statusKey3];
+      
+      // CRITICAL: If size is selected, status MUST be "Available" for inventory deduction
+      // Only use "Not Available" or "Missing" if explicitly set by user
+      const status = statusFromState === "Not Available" || statusFromState === "Missing" 
+        ? statusFromState 
+        : "Available";  // Default to "Available" when size is selected
+      
+      // DEBUG: Log the status being sent
+      console.log("🔍 Uniform No 4 - Status check:", {
+        statusKey1,
+        statusKey2,
+        statusKey3,
+        statusFromState,
+        finalStatus: status,
+        size: uniformNo4Size,
+        hasSize: !!uniformNo4Size,
+        itemStatusKeys: Object.keys(itemStatus).filter(k => k.includes("Uniform No 4"))
+      });
+      
+      items.push({ 
+        category: "Uniform No 4", 
+        type: "Uniform No 4", 
+        size: uniformNo4Size, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
     if (data.boot) {
-      items.push({ category: "Uniform No 4", type: "Boot", size: `${data.boot}`, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if boot is selected
+      const statusKey = `Uniform No 4-Boot`;
+      const status = itemStatus[statusKey] || (data.boot ? "Available" : "Missing");
+      items.push({ 
+        category: "Uniform No 4", 
+        type: "Boot", 
+        size: `${data.boot}`, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
+    // CRITICAL: Accessories don't have sizes, use null to match database
+    // Backend accepts null, "", or "N/A" for accessories and normalizes all to null
+    // Database stores size: null for accessories
+    const accessorySize = null;
+    
     if (data.nametag) {
-      items.push({ category: "Accessories No 4", type: "Nametag No 4", size: null, quantity: 1, notes: data.nametag });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if nametag is provided
+      const statusKey = `Accessories No 4-Nametag No 4`;
+      const status = itemStatus[statusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 4", 
+        type: "Nametag No 4", 
+        size: accessorySize, 
+        quantity: 1, 
+        notes: data.nametag,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
-    // Accessories use null for size (not empty string)
-    if (data.accessories.apmTag) items.push({ category: "Accessories No 4", type: "APM Tag", size: null, quantity: 1 });
-    if (data.accessories.beltNo4) items.push({ category: "Accessories No 4", type: "Belt No 4", size: null, quantity: 1 });
+    // Accessories use null for size (matches database storage)
+    // FIX: Include accessories if boolean is true (user owns it) OR if itemStatus has status (user changed status)
+    // This ensures items with status "Missing" are sent to backend even if boolean is false
+    const apmTagStatusKey = `Accessories No 4-APM Tag`;
+    if (data.accessories.apmTag || itemStatus[apmTagStatusKey]) {
+      const status = itemStatus[apmTagStatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 4", 
+        type: "APM Tag", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
+    const beltNo4StatusKey = `Accessories No 4-Belt No 4`;
+    if (data.accessories.beltNo4 || itemStatus[beltNo4StatusKey]) {
+      const status = itemStatus[beltNo4StatusKey] || "Available";
+      items.push({ 
+        category: "Accessories No 4", 
+        type: "Belt No 4", 
+        size: accessorySize, 
+        quantity: 1,
+        status: status
+      });
+    }
     return items;
   };
 
   const convertTShirtToBackendItems = (data: TShirtData): any[] => {
     const items: any[] = [];
     if (data.digitalShirt) {
-      items.push({ category: "Shirt", type: "Digital Shirt", size: data.digitalShirt, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if size is selected
+      const statusKey = `Shirt-Digital Shirt`;
+      const status = itemStatus[statusKey] || "Available";
+      items.push({ 
+        category: "Shirt", 
+        type: "Digital Shirt", 
+        size: data.digitalShirt, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
     if (data.innerApmShirt) {
-      items.push({ category: "Shirt", type: "Inner APM Shirt", size: data.innerApmShirt, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if size is selected
+      const statusKey = `Shirt-Inner APM Shirt`;
+      const status = itemStatus[statusKey] || "Available";
+      items.push({ 
+        category: "Shirt", 
+        type: "Inner APM Shirt", 
+        size: data.innerApmShirt, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
     if (data.companyShirt) {
-      items.push({ category: "Shirt", type: "Company Shirt", size: data.companyShirt, quantity: 1 });
+      // CRITICAL: Get status from itemStatus state - default to "Available" if size is selected
+      const statusKey = `Shirt-Company Shirt`;
+      const status = itemStatus[statusKey] || "Available";
+      items.push({ 
+        category: "Shirt", 
+        type: "Company Shirt", 
+        size: data.companyShirt, 
+        quantity: 1,
+        status: status  // CRITICAL: Backend only deducts when status is "Available"
+      });
     }
     return items;
   };
@@ -581,7 +1008,7 @@ export default function UniformPage() {
       Swal.fire({
         icon: "error",
         title: "Error",
-        text: "User information not found. Please login again.",
+        text: "User information not found. Please log in again.",
         confirmButtonColor: "#1d4ed8",
       });
       return;
@@ -599,8 +1026,7 @@ export default function UniformPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const url = 'http://localhost:5000/api/members/uniform';
-
+      
       // Use new 5-category structure directly - no normalization
       // Backend must support: "Uniform No 3", "Uniform No 4", "Accessories No 3", "Accessories No 4", "Shirt"
       // Ensure sizes are properly formatted: empty string for accessories, actual size for main items
@@ -615,88 +1041,247 @@ export default function UniformPage() {
           item.type?.toLowerCase().includes(type.toLowerCase())
         );
         
-        // For main items, preserve the size (never convert to empty string)
+        // For main items, normalize size BEFORE sending to match inventory format
         // For accessories, use null (backend might expect null instead of empty string)
         let normalizedSize = item.size;
         if (isMainItem) {
-          // Main items must have a size - keep it as is, or use the actual value
-          normalizedSize = item.size || "";
-          // Ensure main items have a valid size, not empty
-          if (!normalizedSize || normalizedSize.trim() === "") {
-            console.warn(`Main item ${item.type} has empty size, this might cause issues`);
+          const raw = String(item.size ?? "").trim();
+
+          // Shoes/Boot: remove "UK" prefix so it matches inventory saved as "7"
+          if (item.type === "PVC Shoes" || item.type === "Boot") {
+            normalizedSize = raw.replace(/^uk\s*/i, "").trim();
+          }
+          // Beret: keep exact spacing/fractions (do NOT remove spaces)
+          else if (item.type === "Beret") {
+            normalizedSize = raw;
+          }
+          // Clothing/shirt/uniform: just trim
+          else {
+            normalizedSize = raw;
+          }
+
+          if (!normalizedSize) {
+            console.warn(`Main item ${item.type} has empty size`);
           }
         } else {
-          // Accessories: Use null for database compatibility
-          // Empty string might cause issues with database null constraints
-          normalizedSize = (!item.size || item.size === "N/A" || item.size === "" || item.size === null) ? null : item.size;
+          // Accessories: Use null to match database storage
+          // Backend accepts null, "", or "N/A" for accessories and normalizes all to null
+          // Database stores size: null for accessories
+          normalizedSize =
+             (!item.size || item.size === "" || item.size === null || item.size === "N/A")
+               ? null  // Send null for accessories (backend accepts and stores as null)
+               : item.size;
         }
         
-        return {
+        // CRITICAL: Always include status field, but NEVER include missingCount
+        // Backend fixes:
+        // - When status changes TO "Missing": backend always increments, ignoring frontend's missingCount
+        // - When status changes FROM "Missing" to "Available": backend preserves missingCount
+        // - Never send missingCount: 0 to prevent resetting the count
+        // - Backend handles all missingCount calculations based on status changes
+        const itemToSend: any = {
           ...item,
           category: item.category,
-          size: normalizedSize,
-          // Preserve status field if provided (backend now supports and saves it)
-          status: item.status || undefined,
+          size: normalizedSize, // Can be null for accessories
+          // Always include status field (backend needs this to detect status changes)
+          // Default to "Available" if not provided
+          status: item.status || "Available",
         };
+        
+        // CRITICAL: Remove missingCount if present - backend will calculate it
+        // Backend fix: Don't allow frontend to reset missingCount to 0 by sending missingCount: 0
+        // Backend ignores frontend's missingCount when status is changing TO "Missing"
+        // Only backend calculates missingCount based on status transitions
+        if ('missingCount' in itemToSend) {
+          delete itemToSend.missingCount;
+        }
+        
+        return itemToSend;
       });
+
+      const isSingleItemSave = formattedItemsToSend.length === 1;
+
+      // Determine URL and method based on scenario:
+      // - Single item + no existing data: POST /my-uniform/item (add single item)
+      // - Single item + existing data: PUT /api/members/uniform (merge with existing)
+      // - Multiple items + no existing data: POST /my-uniform (add multiple items)
+      // - Multiple items + existing data: PUT /api/members/uniform (merge/replace)
+      let url: string;
+      let method: string;
+      
+      if (isSingleItemSave && !hasExisting) {
+        // Single item, no existing data - use POST /my-uniform/item
+        url = 'http://localhost:5000/api/uniforms/my-uniform/item';
+        method = 'POST';
+      } else if (!hasExisting) {
+        // Multiple items, no existing data - use POST /my-uniform
+        url = 'http://localhost:5000/api/uniforms/my-uniform';
+        method = 'POST';
+      } else {
+        // Has existing data (single or multiple items) - use PUT /api/members/uniform (merge/replace)
+        url = 'http://localhost:5000/api/members/uniform';
+        method = 'PUT';
+      }
 
       // If updating (PUT), we need to merge with existing items from other categories
       let finalItemsToSend = formattedItemsToSend;
+      // Store old items from the category being updated for inventory restoration
+      let oldCategoryItems: any[] = [];
+      // Store existing data for status lookup
+      let existingData: any = null;
       
       if (hasExisting && categoryToUpdate) {
-        // Fetch existing uniform data first
+
+        // Fetch existing uniform data first (use /my-uniform endpoint for fetching)
         try {
-          const existingRes = await fetch(url, {
+          const existingRes = await fetch('http://localhost:5000/api/uniforms/my-uniform', {
             headers: {
               Authorization: `Bearer ${token}`,
             },
           });
           
           if (existingRes.ok) {
-            const existingData = await existingRes.json();
+            existingData = await existingRes.json();
             if (existingData.success && existingData.uniform && existingData.uniform.items) {
               const existingItems = existingData.uniform.items || [];
               
-              // Filter out items from the category being updated
               // Use direct category matching with new 5-category structure
               const updateCategoryLower = categoryToUpdate.toLowerCase();
-              const otherCategoryItems = existingItems.filter((item: any) => {
+              
+              // Get the type(s) being updated from formattedItemsToSend
+              const updatedTypes = formattedItemsToSend.map((item: any) => item.type?.toLowerCase() || "");
+              
+              // First, extract old items from the category being updated (for inventory restoration)
+              // Only get old items that match the types being updated
+              oldCategoryItems = existingItems.filter((item: any) => {
                 const itemCategory = item.category?.toLowerCase() || "";
-                // Direct category match - exclude items from the category being updated
+                const itemType = item.type?.toLowerCase() || "";
                 if (itemCategory === updateCategoryLower) {
-                  return false;
+                  // Only include if it's the same type being updated
+                  return updatedTypes.some(updatedType => itemType === updatedType || itemType.includes(updatedType) || updatedType.includes(itemType));
                 }
-                
-                // Also handle backward compatibility: if backend returns old category names,
-                // we need to map them to new categories for filtering
-                // If updating "Accessories No 3", also exclude accessories from "Uniform No 3"
-                if (updateCategoryLower === "accessories no 3" && itemCategory === "uniform no 3") {
-                  const typeLower = item.type?.toLowerCase() || "";
-                  const accessoryTypes = ["apulet", "integrity badge", "shoulder badge", "cel bar", "beret logo pin", "belt no 3", "nametag"];
-                  if (accessoryTypes.some(acc => typeLower.includes(acc))) {
-                    return false; // Exclude this accessory item
-                  }
-                }
-                // If updating "Accessories No 4", also exclude accessories from "Uniform No 4"
-                if (updateCategoryLower === "accessories no 4" && itemCategory === "uniform no 4") {
-                  const typeLower = item.type?.toLowerCase() || "";
-                  const accessoryTypes = ["apm tag", "belt no 4", "nametag"];
-                  if (accessoryTypes.some(acc => typeLower.includes(acc))) {
-                    return false; // Exclude this accessory item
-                  }
-                }
-                // If updating "Shirt", also exclude items from "T-Shirt" (backward compatibility)
-                if (updateCategoryLower === "shirt" && (itemCategory === "t-shirt" || itemCategory === "tshirt")) {
-                  return false;
-                }
-                
-                return true; // Keep items from other categories
+                return false;
               });
               
-              // Merge: keep items from other categories + add new items from this category
-              finalItemsToSend = [...otherCategoryItems, ...formattedItemsToSend];
+              // Also handle backward compatibility for old items
+              if (updateCategoryLower === "accessories no 3" || updateCategoryLower === "accessories no 4") {
+                const accessoryCategoryMatch = updateCategoryLower === "accessories no 3" ? "uniform no 3" : "uniform no 4";
+                const accessoryTypes = updateCategoryLower === "accessories no 3" 
+                  ? ["apulet", "integrity badge", "shoulder badge", "cel bar", "beret logo pin", "belt no 3", "nametag"]
+                  : ["apm tag", "belt no 4", "nametag"];
+                
+                existingItems.forEach((item: any) => {
+                  const itemCategory = item.category?.toLowerCase() || "";
+                  if (itemCategory === accessoryCategoryMatch) {
+                    const typeLower = item.type?.toLowerCase() || "";
+                    // Check if this accessory type matches what we're updating
+                    const isMatchingAccessory = accessoryTypes.some(acc => typeLower.includes(acc));
+                    const isUpdatedType = updatedTypes.some(updatedType => typeLower.includes(updatedType) || updatedType.includes(typeLower));
+                    if (isMatchingAccessory && isUpdatedType) {
+                      oldCategoryItems.push(item);
+                    }
+                  }
+                });
+              }
+              if (updateCategoryLower === "shirt") {
+                existingItems.forEach((item: any) => {
+                  const itemCategory = item.category?.toLowerCase() || "";
+                  if (itemCategory === "t-shirt" || itemCategory === "tshirt") {
+                    const itemType = item.type?.toLowerCase() || "";
+                    const isUpdatedType = updatedTypes.some(updatedType => itemType.includes(updatedType) || updatedType.includes(itemType));
+                    if (isUpdatedType) {
+                      oldCategoryItems.push(item);
+                    }
+                  }
+                });
+              }
               
-              console.log(`Merging uniforms: Keeping ${otherCategoryItems.length} items from other categories, adding ${itemsToSend.length} items for ${categoryToUpdate}`);
+              // For individual item saves: keep ALL existing items, only replace items with matching type
+              // For category-wide saves (modal forms): replace all items in the category
+              const isIndividualItemSave = isSingleItemSave;
+              
+              if (isIndividualItemSave) {
+                // Individual item save: keep all existing items, replace only matching type
+                const itemsToKeep = existingItems.filter((item: any) => {
+                  const itemCategory = item.category?.toLowerCase() || "";
+                  const itemType = item.type?.toLowerCase() || "";
+                  
+                  // Keep items from other categories
+                  if (itemCategory !== updateCategoryLower) {
+                    // Handle backward compatibility
+                    if (updateCategoryLower === "accessories no 3" && itemCategory === "uniform no 3") {
+                      const typeLower = item.type?.toLowerCase() || "";
+                      const accessoryTypes = ["apulet", "integrity badge", "shoulder badge", "cel bar", "beret logo pin", "belt no 3", "nametag"];
+                      if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                        return false; // This is an accessory, exclude it
+                      }
+                    }
+                    if (updateCategoryLower === "accessories no 4" && itemCategory === "uniform no 4") {
+                      const typeLower = item.type?.toLowerCase() || "";
+                      const accessoryTypes = ["apm tag", "belt no 4", "nametag"];
+                      if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                        return false; // This is an accessory, exclude it
+                      }
+                    }
+                    if (updateCategoryLower === "shirt" && (itemCategory === "t-shirt" || itemCategory === "tshirt")) {
+                      return false;
+                    }
+                    return true; // Keep items from other categories
+                  }
+                  
+                  // For same category: keep items with DIFFERENT types, exclude items with SAME type
+                  const isSameType = updatedTypes.some(updatedType => 
+                    itemType === updatedType || itemType.includes(updatedType) || updatedType.includes(itemType)
+                  );
+                  return !isSameType; // Keep if different type, exclude if same type
+                });
+                
+                // Merge: keep all existing items (except same type) + add new items
+                finalItemsToSend = [...itemsToKeep, ...formattedItemsToSend];
+                
+                console.log(`Individual item save: Keeping ${itemsToKeep.length} existing items, replacing/adding ${formattedItemsToSend.length} item(s) of type(s): ${updatedTypes.join(", ")}`);
+              } else {
+                // Category-wide save (modal form): replace all items in the category
+                const otherCategoryItems = existingItems.filter((item: any) => {
+                  const itemCategory = item.category?.toLowerCase() || "";
+                  // Direct category match - exclude items from the category being updated
+                  if (itemCategory === updateCategoryLower) {
+                    return false;
+                  }
+                  
+                  // Also handle backward compatibility: if backend returns old category names,
+                  // we need to map them to new categories for filtering
+                  // If updating "Accessories No 3", also exclude accessories from "Uniform No 3"
+                  if (updateCategoryLower === "accessories no 3" && itemCategory === "uniform no 3") {
+                    const typeLower = item.type?.toLowerCase() || "";
+                    const accessoryTypes = ["apulet", "integrity badge", "shoulder badge", "cel bar", "beret logo pin", "belt no 3", "nametag"];
+                    if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                      return false; // Exclude this accessory item
+                    }
+                  }
+                  // If updating "Accessories No 4", also exclude accessories from "Uniform No 4"
+                  if (updateCategoryLower === "accessories no 4" && itemCategory === "uniform no 4") {
+                    const typeLower = item.type?.toLowerCase() || "";
+                    const accessoryTypes = ["apm tag", "belt no 4", "nametag"];
+                    if (accessoryTypes.some(acc => typeLower.includes(acc))) {
+                      return false; // Exclude this accessory item
+                    }
+                  }
+                  // If updating "Shirt", also exclude items from "T-Shirt" (backward compatibility)
+                  if (updateCategoryLower === "shirt" && (itemCategory === "t-shirt" || itemCategory === "tshirt")) {
+                    return false;
+                  }
+                  
+                  return true; // Keep items from other categories
+                });
+                
+                // Merge: keep items from other categories + add new items from this category
+                finalItemsToSend = [...otherCategoryItems, ...formattedItemsToSend];
+                
+                console.log(`Category-wide save: Keeping ${otherCategoryItems.length} items from other categories, replacing all items in ${categoryToUpdate}`);
+              }
+              
+              console.log(`Old category items (for inventory restoration):`, oldCategoryItems);
             }
           }
         } catch (fetchError) {
@@ -705,20 +1290,170 @@ export default function UniformPage() {
         }
       }
 
-      // Always use PUT when we have existing data (to replace all items with merged data)
-      // Use POST only when there's no existing data at all
-      const method = hasExisting ? "PUT" : "POST";
+      // Build a lookup from the latest uniform data we already have in state
+      // so we can preserve status if it gets dropped during mapping.
+      const normalize = (v: any) => String(v ?? "").trim().toLowerCase();
+      const normalizeSize = (v: any) => {
+        const s = String(v ?? "").trim();
+        return s === "" ? "NO_SIZE" : s.toLowerCase();
+      };
+
+      const makeKey = (it: any) =>
+        `${normalize(it.category)}|${normalize(it.type)}|${normalizeSize(it.size)}`;
+
+      // Use existingData from API if available, otherwise empty array
+      const prevItems = (existingData?.uniform?.items ?? []).filter(Boolean);
+
+      const prevStatusMap = new Map<string, string>();
+      for (const it of prevItems) {
+        if (it?.category && it?.type && it?.status) {
+          prevStatusMap.set(makeKey(it), it.status);
+        }
+      }
+
+      const cleanedItemsToSend = finalItemsToSend.map((item: any) => {
+        const cleanedItem = { ...item };
+      
+        // ✅ Never send missingCount (backend controls it)
+        if ("missingCount" in cleanedItem) {
+          delete cleanedItem.missingCount;
+        }
+      
+        // Normalize size (important: avoid null vs "" mismatches)
+        if (cleanedItem.size === null || cleanedItem.size === undefined) {
+          cleanedItem.size = "";
+        }
+      
+        // ✅ Fix: don't default to Available blindly.
+        // If status is missing, try to recover it from:
+        // 1) itemStatus (your UI state), else
+        // 2) previous status from backend (prevStatusMap), else
+        // 3) fallback to "Available"
+        const statusKey = `${cleanedItem.category}-${cleanedItem.type}`; // matches your itemStatus key pattern
+        const prevKey = makeKey(cleanedItem);
+      
+        if (!cleanedItem.status) {
+          cleanedItem.status =
+            itemStatus?.[statusKey] ||
+            prevStatusMap.get(prevKey) ||
+            "Available";
+        }
+      
+        return cleanedItem;
+      });
+      
+      console.log("✅ CLEANED payload items status preview:",
+        cleanedItemsToSend.map((x: any) => ({
+          category: x.category,
+          type: x.type,
+          size: x.size,
+          status: x.status
+        }))
+      );
+      
 
       console.log("Sending request to:", url);
       console.log("Method:", method);
-      console.log("Items to send:", JSON.stringify(finalItemsToSend, null, 2));
+      console.log("Items to send:", JSON.stringify(cleanedItemsToSend, null, 2));
+      
+      // DEBUG: Verify status field is included and missingCount is NOT included
+      console.log("🔍 Frontend MissingCount Check - Request Payload Verification:");
+      cleanedItemsToSend.forEach((item: any, index: number) => {
+        const hasStatus = !!item.status;
+        const hasMissingCount = 'missingCount' in item;
+        const statusValue = item.status;
+        
+        console.log(`📤 Item ${index + 1} (${item.type}):`, {
+          category: item.category,
+          type: item.type,
+          size: item.size,
+          quantity: item.quantity,
+          status: statusValue, // ✅ Should always be present
+          hasStatus: hasStatus, // ✅ Should be true
+          hasMissingCount: hasMissingCount, // ❌ Should be false
+          missingCount: item.missingCount // Should be undefined
+        });
+        
+        // Special logging for Missing status items
+        if (statusValue === "Missing") {
+          console.log(`   ✅ Status is "Missing" - backend should increment missingCount`);
+          if (hasMissingCount) {
+            console.error(`   ❌ ERROR: missingCount field is present! This will prevent backend from incrementing!`);
+          } else {
+            console.log(`   ✅ missingCount field is NOT present - backend will calculate it correctly`);
+          }
+        }
+        
+        if (!item.status) {
+          console.error(`⚠️ ERROR: Item ${item.type} is missing status field! Backend cannot detect status changes!`);
+        }
+        if (hasMissingCount) {
+          console.error(`⚠️ ERROR: Item ${item.type} includes missingCount - this will override backend calculation!`);
+        }
+      });
+      
+      // Summary log
+      const missingStatusItems = cleanedItemsToSend.filter((item: any) => item.status === "Missing");
+      if (missingStatusItems.length > 0) {
+        console.log(`📋 Summary: ${missingStatusItems.length} item(s) with status="Missing" being sent`);
+        missingStatusItems.forEach((item: any) => {
+          const hasMissingCount = 'missingCount' in item;
+          console.log(`   - ${item.type}: status="Missing"${hasMissingCount ? ' ❌ HAS missingCount (WRONG!)' : ' ✅ NO missingCount (CORRECT!)'}`);
+        });
+      }
+      
+      // DEBUG: Check Uniform No 4 items specifically
+      const uniformNo4Items = cleanedItemsToSend.filter((item: any) => 
+        item.category === "Uniform No 4" && item.type === "Uniform No 4"
+      );
+      if (uniformNo4Items.length > 0) {
+        console.log("🔍 Uniform No 4 items being sent:", uniformNo4Items);
+        uniformNo4Items.forEach((item: any) => {
+          console.log(`   - Category: "${item.category}", Type: "${item.type}", Size: "${item.size}", Status: "${item.status}"`);
+          if (!item.status || item.status !== "Available") {
+            console.error("❌ WARNING: Uniform No 4 item missing status or status is not 'Available'!");
+          }
+        });
+      }
       // Debug: Check if Beret is being sent correctly
-      const beretItems = finalItemsToSend.filter((item: any) => item.type?.toLowerCase().includes("beret"));
+      const beretItems = cleanedItemsToSend.filter((item: any) => item.type?.toLowerCase().includes("beret"));
       if (beretItems.length > 0) {
         console.log("Beret items being sent:", beretItems);
         beretItems.forEach((item: any) => {
           console.log(`Beret item - Category: "${item.category}", Type: "${item.type}", Size: "${item.size}"`);
         });
+      }
+      
+      // Prepare request body based on endpoint
+      let requestBody: any;
+      if (method === 'POST' && url.includes('/item')) {
+        // POST /my-uniform/item expects a single item (not wrapped in items array)
+        // Ensure size field is always present (even if null for accessories)
+        requestBody = {
+          ...cleanedItemsToSend[0],
+          size: cleanedItemsToSend[0].size !== undefined ? cleanedItemsToSend[0].size : null
+        };
+        console.log("📤 Single item request body:", JSON.stringify(requestBody, null, 2));
+      } else if (method === 'POST') {
+        // POST /my-uniform expects items array
+        // Ensure size field is always present for each item (even if null for accessories)
+        requestBody = {
+          items: cleanedItemsToSend.map((item: any) => ({
+            ...item,
+            size: item.size !== undefined ? item.size : null
+          }))
+        };
+        console.log("📤 Multiple items request body:", JSON.stringify(requestBody, null, 2));
+      } else {
+        // PUT /api/members/uniform expects items array (no updateMode)
+        // Ensure size field is empty string for accessories, actual size for uniforms
+        requestBody = {
+          items: cleanedItemsToSend.map((item: any) => ({
+            ...item,
+            size: item.size !== undefined && item.size !== null ? item.size : "" // Empty string for accessories, not null
+          }))
+        };
+        console.log("📤 PUT request body:", JSON.stringify(requestBody, null, 2));
       }
       
       const res = await fetch(url, {
@@ -727,7 +1462,7 @@ export default function UniformPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ items: finalItemsToSend }),
+        body: JSON.stringify(requestBody),
       });
       
       console.log("Response status:", res.status, res.statusText);
@@ -789,8 +1524,277 @@ export default function UniformPage() {
       }
 
       if (data.success) {
-        // Note: Inventory deduction is handled by the backend in /api/members/uniform endpoint
-        // No need to call /api/inventory/deduct separately
+        // DEBUG: Verify response contains updated missingCount
+        if (data.uniform && data.uniform.items) {
+          console.log("📥 Frontend MissingCount Check - Response Verification:");
+          // Process ALL items to update missingCount (not just missing ones)
+          // This preserves missingCount for items that changed from Missing to Available
+          const updatedMissingCount: Record<string, number> = {};
+          const allItems = data.uniform.items || [];
+          
+          // First, process items with status "Missing"
+          const missingItems = allItems.filter((item: any) => item.status === "Missing");
+          if (missingItems.length > 0) {
+            console.log(`   Found ${missingItems.length} item(s) with status="Missing" in response:`);
+            missingItems.forEach((item: any) => {
+              const category = item.category || "";
+              const type = item.type || "";
+              const sizeValue = item.size ?? "N/A";
+              // ✅ CRITICAL: Use missingKey (category|type|size) NOT statusKey (category-type)
+              const missingKey = getMissingKey(category, type, sizeValue);
+              console.log(`   - ${item.type} [${sizeValue}]: status="${item.status}", missingCount=${item.missingCount !== undefined ? item.missingCount : 'undefined'}`);
+              
+              // Backend fix: missingCount now defaults to 0 instead of undefined
+              // 0 is a valid value (first time Missing, backend will increment it)
+              if (item.missingCount === undefined || item.missingCount === null) {
+                console.warn(`     ⚠️ WARNING: missingCount is ${item.missingCount} - backend may not have included it in response`);
+                console.log(`     🔄 WORKAROUND: Fetching fresh data to get missingCount from database...`);
+                
+                // WORKAROUND: If missingCount is not in response, fetch fresh data after a short delay
+                // This ensures we get the updated missingCount from the database
+                setTimeout(async () => {
+                  try {
+                    const token = localStorage.getItem("token");
+                    const freshRes = await fetch("http://localhost:5000/api/uniforms/my-uniform", {
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                      },
+                    });
+                    
+                    if (freshRes.ok) {
+                      const freshData = await freshRes.json();
+                      if (freshData.success && freshData.uniform && freshData.uniform.items) {
+                        const freshItem = freshData.uniform.items.find((i: any) => {
+                          const freshSize = i.size ?? "N/A";
+                          return i.category === category && i.type === type && freshSize === sizeValue && i.status === "Missing";
+                        });
+                        // Backend fix: Accept 0 as a valid value (default, backend will increment)
+                        if (freshItem && freshItem.missingCount !== undefined && freshItem.missingCount !== null) {
+                          console.log(`     ✅ Fetched missingCount from database: ${freshItem.missingCount}`);
+                          // ✅ CRITICAL: Use missingKey NOT statusKey
+                          setItemMissingCount(prev => ({ ...prev, [missingKey]: freshItem.missingCount }));
+                        }
+                      }
+                    }
+                  } catch (error) {
+                    console.error("Error fetching fresh data for missingCount:", error);
+                  }
+                }, 500); // Wait 500ms for backend to save
+              } else {
+                // Backend should increment missingCount every time status is "Missing"
+                // If missingCount is 0, backend may not have incremented yet or there's an issue
+                if (item.missingCount === 0) {
+                  console.warn(`     ⚠️ WARNING: missingCount is 0 - backend should increment it when status is "Missing"`);
+                  console.warn(`     ⚠️ Backend should read existing count from DB and increment it, not reset to 0`);
+                } else {
+                  console.log(`     ✅ missingCount is ${item.missingCount} - backend incremented correctly`);
+                }
+                // Update missingCount state for UI display (but won't show 0 in UI)
+                // ✅ CRITICAL: Use missingKey NOT statusKey
+                updatedMissingCount[missingKey] = item.missingCount ?? 1;
+              }
+            });
+          } else {
+            console.log("   No items with status='Missing' in response");
+          }
+          
+          // Also process items with status "Available" that have missingCount (preserve it)
+          // This handles cases where item changed from Missing to Available but we want to keep the count
+          allItems.forEach((item: any) => {
+            if (item.status === "Available" && item.missingCount !== undefined && item.missingCount !== null) {
+              const category = item.category || "";
+              const type = item.type || "";
+              const sizeValue = item.size ?? "N/A";
+              // ✅ CRITICAL: Use missingKey (category|type|size) NOT statusKey (category-type)
+              const missingKey = getMissingKey(category, type, sizeValue);
+              // Preserve missingCount even when status is Available
+              updatedMissingCount[missingKey] = item.missingCount;
+            }
+          });
+          
+          // Update missingCount state with new values from response
+          if (Object.keys(updatedMissingCount).length > 0) {
+            setItemMissingCount(prev => ({ ...prev, ...updatedMissingCount }));
+          }
+        }
+
+        // ✅ Inventory deduction logic:
+        // 1. Deduct only when status === "Available"
+        // 2. Restore old items when status changes from "Available" to "Missing" or "Not Available"
+        // 3. Restore old size + deduct new size only when status is Available (size change)
+        // 
+        // Backend fix: Deduct endpoint now allows empty items array when oldItems is provided
+        // This enables restore operations when status changes from "Available" to "Missing"/"Not Available"
+        // 
+        // NOTE: Backend handles type name mapping automatically (e.g., "Uniform No 3 Female" → searches for 
+        // ["Uniform No 3 Female", "Pants No 3", "Pants No. 3", ...]), so we send type names as-is.
+        
+        const itemsToDeduct = formattedItemsToSend.filter((item: any) => item.status === "Available");
+        
+        // Restore old items ONLY when:
+        // 1. Old item had status === "Available"
+        // 2. New item also has status === "Available" (size change scenario)
+        // 3. Size actually changed (old size !== new size)
+        // 
+        // NO restore for status changes to "Missing" or "Not Available"
+        const oldItemsToRestore = oldCategoryItems.filter((oldItem: any) => {
+          // Only restore if old item had status "Available"
+          if (oldItem.status !== "Available") {
+            return false;
+          }
+          
+          // Find corresponding new item
+          const newItem = formattedItemsToSend.find((item: any) => 
+            item.category === oldItem.category && 
+            item.type === oldItem.type
+          );
+          
+          // Only restore if:
+          // 1. New item exists AND has status "Available" (size change scenario)
+          // 2. Size actually changed
+          if (newItem && newItem.status === "Available") {
+            // Check if size changed (for items with sizes)
+            if (oldItem.size && newItem.size) {
+              // Size changed - restore old size, deduct new size
+              return oldItem.size !== newItem.size;
+            }
+            // For items without sizes (accessories), no restore needed (no size to change)
+            return false;
+          }
+          
+          // Status changed to "Missing" or "Not Available" - NO restore
+          return false;
+        });
+        
+        // DEBUG: Log deduction details
+        console.log("🔍 Inventory Deduction Debug:", {
+          itemsToDeductCount: itemsToDeduct.length,
+          oldItemsToRestoreCount: oldItemsToRestore.length,
+          itemsToDeduct: itemsToDeduct.map((item: any) => ({
+            category: item.category,
+            type: item.type, // Backend will map this to inventory type names
+            size: item.size,
+            status: item.status,
+            quantity: item.quantity
+          })),
+          oldItemsToRestore: oldItemsToRestore.map((item: any) => ({
+            category: item.category,
+            type: item.type, // Backend will map this to inventory type names
+            size: item.size,
+            status: item.status
+          })),
+          note: "Backend handles type name mapping (e.g., 'Uniform No 3 Female' → searches for ['Uniform No 3 Female', 'Pants No 3', ...])"
+        });
+        
+        // Only call deduction API if there are items to deduct or restore
+        // Backend fix: Allows empty items array when oldItems is provided (for restore operations)
+        // This handles cases where status changes from "Available" to "Missing"/"Not Available"
+        // (itemsToDeduct will be empty, but oldItemsToRestore will have items to restore)
+        if (itemsToDeduct.length > 0 || oldItemsToRestore.length > 0) {
+          const deductionPayload = { 
+            items: itemsToDeduct, // Only deduct items with status === "Available" (can be empty for restore-only operations)
+            oldItems: oldItemsToRestore // Restore old items that had status === "Available"
+          };
+          
+          console.log("📤 Sending deduction request to: http://localhost:5000/api/uniforms/deduct");
+          console.log("📤 Deduction payload:", JSON.stringify(deductionPayload, null, 2));
+          
+          try {
+            const deductRes = await fetch("http://localhost:5000/api/uniforms/deduct", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify(deductionPayload),
+            });
+            
+            console.log("📥 Deduction response status:", deductRes.status, deductRes.statusText);
+            
+            const deductContentType = deductRes.headers.get("content-type");
+            if (deductContentType && deductContentType.includes("application/json")) {
+              const deductData = await deductRes.json();
+              console.log("📥 Deduction response data:", JSON.stringify(deductData, null, 2));
+              
+              if (!deductRes.ok) {
+                // Only log error, don't show to user if it's just a restore operation (no items to deduct)
+                // This happens when status changes to "Not Available" or "Missing" - we're only restoring
+                if (itemsToDeduct.length === 0 && oldItemsToRestore.length > 0) {
+                  console.log("ℹ️ Restore operation completed (status changed away from Available)");
+                  // Backend might return error if items don't exist to restore, but that's okay
+                  if (deductData.message) {
+                    console.log("ℹ️ Backend message:", deductData.message);
+                  }
+                } else {
+                  console.error("❌ Deduction API error:", deductData);
+                }
+              } else {
+                // Check if items were actually deducted
+                const deductedCount = deductData.deducted?.length || 0;
+                const requestedCount = itemsToDeduct.length;
+                const restoredCount = deductData.restored?.length || 0;
+                const requestedRestoreCount = oldItemsToRestore.length;
+                
+                // Log restore results
+                if (requestedRestoreCount > 0) {
+                  if (restoredCount === 0 && requestedRestoreCount > 0) {
+                    console.log("ℹ️ No items restored (may not exist in inventory or already restored)");
+                  } else {
+                    console.log(`✅ Inventory restore successful - ${restoredCount} item(s) restored`);
+                  }
+                }
+                
+                // Log deduction results
+                if (deductedCount === 0 && requestedCount > 0) {
+                  console.warn("⚠️ WARNING: Deduction API returned success but NO items were deducted!");
+                  console.warn("⚠️ This usually means backend couldn't find matching inventory items.");
+                  console.warn("⚠️ Check for mismatches in:");
+                  console.warn("   - Type names (e.g., 'Uniform No 3 Female' vs 'Cloth No 3')");
+                  console.warn("   - Size formats (e.g., '8' vs 'UK 8')");
+                  console.warn("   - Category names");
+                  console.warn("⚠️ Items sent:", itemsToDeduct.map((item: any) => ({
+                    category: item.category,
+                    type: item.type,
+                    size: item.size,
+                    status: item.status
+                  })));
+                } else if (deductedCount < requestedCount) {
+                  console.warn(`⚠️ WARNING: Only ${deductedCount} of ${requestedCount} items were deducted`);
+                } else if (deductedCount > 0) {
+                  console.log(`✅ Inventory deduction successful - ${deductedCount} item(s) deducted`);
+                }
+              }
+            } else {
+              const deductText = await deductRes.text();
+              console.log("📥 Deduction response (non-JSON):", deductText);
+              if (!deductRes.ok) {
+                // Only log error, don't show to user if it's just a restore operation
+                if (itemsToDeduct.length === 0 && oldItemsToRestore.length > 0) {
+                  console.log("ℹ️ Restore operation (status changed away from Available) - backend may return error if items don't exist");
+                } else {
+                  console.error("❌ Deduction API error (non-JSON):", deductRes.status, deductText);
+                }
+              }
+            }
+          } catch (deductError: any) {
+            // Only log error, don't show to user if it's just a restore operation
+            if (itemsToDeduct.length === 0 && oldItemsToRestore.length > 0) {
+              console.log("ℹ️ Restore operation error (non-critical):", deductError.message);
+            } else {
+              console.error("❌ Deduction API request failed:", deductError);
+              console.error("Error details:", {
+                message: deductError.message,
+                stack: deductError.stack
+              });
+            }
+            // Don't block the success flow if deduction fails - just log it
+          }
+        } else {
+          console.log("⏭️ Skipping deduction - no items to deduct or restore");
+          console.log("   Items to deduct:", itemsToDeduct.length);
+          console.log("   Old items to restore:", oldItemsToRestore.length);
+        }
+       
 
         await Swal.fire({
           icon: "success",
@@ -803,6 +1807,7 @@ export default function UniformPage() {
           timerProgressBar: true,
           showConfirmButton: true,
         });
+        
         fetchUniform();
         return true;
       } else {
@@ -872,8 +1877,8 @@ export default function UniformPage() {
       
       // Uniform No 4 items
       "boot": "/boot.jpg",
-      "nametag no 4": "/nametagno4.jpg",
-      "nametagno4": "/nametagno4.jpg",
+      "nametag no 4": "/nametagno4.png",
+      "nametagno4": "/nametagno4.png",
       
       // Accessories No 3
       "belt no 3": "/beltno3.jpg",
@@ -889,8 +1894,8 @@ export default function UniformPage() {
       // Accessories No 4
       "belt no 4": "/beltno4.png",
       "beltno4": "/beltno4.png",
-      "apm tag": "/apmtag.jpg",
-      "apmtag": "/apmtag.jpg",
+      "apm tag": "/apmtag.png",
+      "apmtag": "/apmtag.png",
       
       // Shirt items (if needed)
       "digital shirt": "/digital.png",
@@ -912,7 +1917,7 @@ export default function UniformPage() {
     
     // Default fallback based on common patterns
     if (typeLower.includes("nametag") && typeLower.includes("no 4")) {
-      return "/nametagno4.jpg";
+      return "/nametagno4.png";
     }
     if (typeLower.includes("nametag") && (typeLower.includes("no 3") || !typeLower.includes("no 4"))) {
       return "/nametagno3.png";
@@ -1537,31 +2542,93 @@ export default function UniformPage() {
   };
 
   const getShirtItems = (): UniformItem[] => {
+    // Helper function to get price from multiple sources (priority order)
+    // Price is stored directly in UniformInventory.price (per shirt type, same for all sizes)
+    const getShirtPrice = (shirtType: string): number | undefined => {
+      // Priority 1: Get price from API response items (user's saved uniform data - most up-to-date)
+      const apiItem = apiItemsWithPrices.find((item: any) => 
+        item.category === "Shirt" && 
+        item.type?.toLowerCase() === shirtType.toLowerCase() &&
+        item.price !== undefined && 
+        item.price !== null
+      );
+      
+      if (apiItem && apiItem.price !== null && apiItem.price !== undefined) {
+        return apiItem.price;
+      }
+      
+      // Priority 2: Get price from inventory items (UniformInventory.price - always available)
+      // Price is stored directly in item.price field from GET /api/inventory
+      const inventoryItem = inventoryItems.find((item: any) => {
+        const category = item.category?.toLowerCase() || "";
+        const type = item.type?.toLowerCase() || "";
+        return (category === "shirt" || category === "t-shirt") &&
+               type === shirtType.toLowerCase() &&
+               item.price !== undefined && 
+               item.price !== null;
+      });
+      
+      if (inventoryItem && inventoryItem.price !== null && inventoryItem.price !== undefined) {
+        console.log(`💰 Found price from UniformInventory for ${shirtType}:`, inventoryItem.price);
+        return inventoryItem.price;
+      } else {
+        // Debug: Log if inventory item found but price is missing
+        const itemWithoutPrice = inventoryItems.find((item: any) => {
+          const category = item.category?.toLowerCase() || "";
+          const type = item.type?.toLowerCase() || "";
+          return (category === "shirt" || category === "t-shirt") &&
+                 type === shirtType.toLowerCase();
+        });
+        if (itemWithoutPrice) {
+          console.warn(`⚠️ Inventory item found for ${shirtType} but price is missing:`, {
+            category: itemWithoutPrice.category,
+            type: itemWithoutPrice.type,
+            hasPrice: itemWithoutPrice.price !== undefined,
+            priceValue: itemWithoutPrice.price,
+            allFields: Object.keys(itemWithoutPrice)
+          });
+        } else {
+          console.warn(`⚠️ No inventory item found for ${shirtType}`);
+        }
+      }
+      
+      // Priority 3: Fallback to shirtPrices state (from previous fetch or localStorage)
+      if (shirtType === "Digital Shirt") {
+        return shirtPrices.digitalShirt !== null ? shirtPrices.digitalShirt : undefined;
+      } else if (shirtType === "Company Shirt") {
+        return shirtPrices.companyShirt !== null ? shirtPrices.companyShirt : undefined;
+      } else if (shirtType === "Inner APM Shirt") {
+        return shirtPrices.innerApmShirt !== null ? shirtPrices.innerApmShirt : undefined;
+      }
+      
+      return undefined;
+    };
+    
     // If inventory is loaded, generate items dynamically from inventory
     if (inventoryItems.length > 0) {
       const dynamicItems = generateItemsFromInventory("Shirt", "/digital.png");
       // Only return items that have sizes
       return dynamicItems.filter(item => {
-        const hasSizes = inventoryItems.some(inv => 
-          (inv.category === "Shirt" || inv.category === "T-Shirt") && 
-          inv.type === item.type && 
+        const hasSizes = inventoryItems.some(inv =>
+          (inv.category === "Shirt" || inv.category === "T-Shirt") &&
+          inv.type === item.type &&
           inv.size !== null
         );
         return hasSizes;
       }).map(item => {
         // Determine status and price
         let shirtStatus: "Available" | "Missing" = "Missing";
-        let shirtPrice: number | undefined = undefined;
         if (item.type === "Digital Shirt") {
           shirtStatus = tShirt?.digitalShirt ? "Available" : "Missing";
-          shirtPrice = shirtPrices.digitalShirt || undefined;
         } else if (item.type === "Company Shirt") {
           shirtStatus = tShirt?.companyShirt ? "Available" : "Missing";
-          shirtPrice = shirtPrices.companyShirt || undefined;
         } else if (item.type === "Inner APM Shirt") {
           shirtStatus = tShirt?.innerApmShirt ? "Available" : "Missing";
-          shirtPrice = shirtPrices.innerApmShirt || undefined;
         }
+        
+        // Get price from API response or state
+        const shirtPrice = getShirtPrice(item.type);
+        
         return { ...item, status: shirtStatus, price: shirtPrice };
       });
     }
@@ -1576,7 +2643,7 @@ export default function UniformPage() {
         image: "/digital.png",
         size: tShirt?.digitalShirt || undefined,
         status: tShirt?.digitalShirt ? "Available" : "Missing",
-        price: shirtPrices.digitalShirt || undefined,
+        price: getShirtPrice("Digital Shirt"),
         sizeChart: getSizeChartUrl("T-Shirt", "Digital Shirt"),
       },
       {
@@ -1587,7 +2654,7 @@ export default function UniformPage() {
         image: "/company.png",
         size: tShirt?.companyShirt || undefined,
         status: tShirt?.companyShirt ? "Available" : "Missing",
-        price: shirtPrices.companyShirt || undefined,
+        price: getShirtPrice("Company Shirt"),
         sizeChart: getSizeChartUrl("T-Shirt", "Company Shirt"),
       },
       {
@@ -1598,7 +2665,7 @@ export default function UniformPage() {
         image: "/innerapm.png",
         size: tShirt?.innerApmShirt || undefined,
         status: tShirt?.innerApmShirt ? "Available" : "Missing",
-        price: shirtPrices.innerApmShirt || undefined,
+        price: getShirtPrice("Inner APM Shirt"),
         sizeChart: getSizeChartUrl("T-Shirt", "Inner APM Shirt"),
       },
     ];
@@ -1650,10 +2717,54 @@ export default function UniformPage() {
   };
 
   // Filter items: if searching, search across all categories; otherwise filter by selected category
+  // Search by: name, SISPA ID, item type, or size
   const displayedItems = searchTerm
-    ? getAllItems().filter((item) =>
-        item.name.toLowerCase().includes(searchTerm.toLowerCase())
-      )
+    ? getAllItems().filter((item) => {
+        const searchLower = searchTerm.toLowerCase().trim();
+        if (!searchLower) return true;
+        
+        // Search in item name
+        const matchesName = item.name.toLowerCase().includes(searchLower);
+        
+        // Search in item type
+        const matchesType = item.type.toLowerCase().includes(searchLower);
+        
+        // Search in SISPA ID (if user has one)
+        const matchesSispaId = user?.sispaId?.toLowerCase().includes(searchLower) || false;
+        
+        // Search in item size (if available)
+        const matchesSize = item.size?.toLowerCase().includes(searchLower) || false;
+        
+        // Also search in current size values from form data
+        let matchesFormSize = false;
+        if (item.category === "Uniform No 3") {
+          if (item.type === "Uniform No 3 Male" || item.type === "Cloth No 3") {
+            matchesFormSize = (formDataNo3?.clothNo3 || uniformNo3?.clothNo3 || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "Uniform No 3 Female" || item.type === "Pants No 3") {
+            matchesFormSize = (formDataNo3?.pantsNo3 || uniformNo3?.pantsNo3 || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "PVC Shoes") {
+            matchesFormSize = (formDataNo3?.pvcShoes || uniformNo3?.pvcShoes || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "Beret") {
+            matchesFormSize = (formDataNo3?.beret || uniformNo3?.beret || "").toLowerCase().includes(searchLower);
+          }
+        } else if (item.category === "Uniform No 4") {
+          if (item.type === "Uniform No 4" || item.type === "Cloth No 4" || item.type === "Pants No 4") {
+            matchesFormSize = (formDataNo4?.clothNo4 || formDataNo4?.pantsNo4 || uniformNo4?.clothNo4 || uniformNo4?.pantsNo4 || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "Boot") {
+            matchesFormSize = (formDataNo4?.boot || uniformNo4?.boot || "").toLowerCase().includes(searchLower);
+          }
+        } else if (item.category === "Shirt") {
+          if (item.type === "Digital Shirt") {
+            matchesFormSize = (formDataTShirt?.digitalShirt || tShirt?.digitalShirt || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "Inner APM Shirt") {
+            matchesFormSize = (formDataTShirt?.innerApmShirt || tShirt?.innerApmShirt || "").toLowerCase().includes(searchLower);
+          } else if (item.type === "Company Shirt") {
+            matchesFormSize = (formDataTShirt?.companyShirt || tShirt?.companyShirt || "").toLowerCase().includes(searchLower);
+          }
+        }
+        
+        return matchesName || matchesType || matchesSispaId || matchesSize || matchesFormSize;
+      })
     : selectedCategory
     ? getItemsForCategory(selectedCategory)
     : [];
@@ -1696,7 +2807,7 @@ export default function UniformPage() {
           <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
           <input
             type="text"
-            placeholder="Search for items..."
+            placeholder="Search by name, SISPA ID, item type, or size..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -1745,9 +2856,38 @@ export default function UniformPage() {
       {/* Items Display - Editable Cards */}
       {(selectedCategory || searchTerm) && displayedItems.length > 0 && (
         <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6 mb-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">
-            {searchTerm ? `Search Results for "${searchTerm}"` : selectedCategory}
-          </h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-gray-900">
+              {searchTerm ? `Search Results for "${searchTerm}"` : selectedCategory}
+            </h2>
+            {/* Price Error Warning & Refresh Button */}
+            {priceLoadError && (selectedCategory === "Shirt" || selectedCategory === "T-Shirt" || displayedItems.some(item => item.category === "Shirt")) && (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-md">
+                  <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span className="text-sm text-amber-800">Prices not available</span>
+                </div>
+                <button
+                  onClick={() => fetchInventory(true)}
+                  disabled={isRefreshingPrices}
+                  className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                  title="Refresh prices from inventory"
+                >
+                  <svg 
+                    className={`w-4 h-4 ${isRefreshingPrices ? 'animate-spin' : ''}`} 
+                    fill="none" 
+                    stroke="currentColor" 
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {isRefreshingPrices ? 'Refreshing...' : 'Refresh Prices'}
+                </button>
+              </div>
+            )}
+          </div>
 
           {displayedItems.length === 0 ? (
             <p className="text-center text-gray-500 py-8">
@@ -1947,17 +3087,17 @@ export default function UniformPage() {
                       setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: statusValue }));
                     }
                     
-                    // Handle accessories (status stored as boolean AND in itemStatus)
-                    // CRITICAL: Update both the boolean AND itemStatus so getCurrentStatus() works correctly
+                    // Handle accessories (status stored in itemStatus only)
+                    // FIX: Don't change boolean when status changes - boolean = ownership, not status
+                    // Boolean should only change when item is added/removed, not when status changes
+                    // This allows status to be "Missing" while boolean remains true (user owns it but it's missing)
                     const statusKey = `${category}-${item.type}`;
                     setItemStatus(prev => ({ ...prev, [statusKey]: statusValue }));
                     
-                    if (item.type === "Apulet") updated.accessories.apulet = value === "Available";
-                    if (item.type === "Integrity Badge") updated.accessories.integrityBadge = value === "Available";
-                    if (item.type === "Shoulder Badge") updated.accessories.shoulderBadge = value === "Available";
-                    if (item.type === "Cel Bar") updated.accessories.celBar = value === "Available";
-                    if (item.type === "Beret Logo Pin") updated.accessories.beretLogoPin = value === "Available";
-                    if (item.type === "Belt No 3") updated.accessories.beltNo3 = value === "Available";
+                    // DO NOT update boolean flags when status changes
+                    // Boolean represents ownership (user has the item), not current status
+                    // Status is stored separately in itemStatus
+                    
                     if (item.type === "Nametag") {
                       // For nametag, if status is "Not Available" or "Missing", clear the name
                       if (value === "Not Available" || value === "Missing") {
@@ -1975,13 +3115,17 @@ export default function UniformPage() {
                       setItemStatus(prev => ({ ...prev, [`${category}-${item.type}`]: statusValue }));
                     }
                     
-                    // Handle accessories (status stored as boolean AND in itemStatus)
-                    // CRITICAL: Update both the boolean AND itemStatus so getCurrentStatus() works correctly
+                    // Handle accessories (status stored in itemStatus only)
+                    // FIX: Don't change boolean when status changes - boolean = ownership, not status
+                    // Boolean should only change when item is added/removed, not when status changes
+                    // This allows status to be "Missing" while boolean remains true (user owns it but it's missing)
                     const statusKey = `${category}-${item.type}`;
                     setItemStatus(prev => ({ ...prev, [statusKey]: statusValue }));
                     
-                    if (item.type === "APM Tag") updated.accessories.apmTag = value === "Available";
-                    if (item.type === "Belt No 4") updated.accessories.beltNo4 = value === "Available";
+                    // DO NOT update boolean flags when status changes
+                    // Boolean represents ownership (user has the item), not current status
+                    // Status is stored separately in itemStatus
+                    
                     if (item.type === "Nametag") {
                       // For nametag, if status is "Not Available" or "Missing", clear the name
                       if (value === "Not Available" || value === "Missing") {
@@ -2285,12 +3429,17 @@ export default function UniformPage() {
                                   ? statusValue 
                                   : (statusValue === "Available" ? "Available" : "Missing");
                                 
+                                // CRITICAL: Accessories don't have sizes, use null to match database
+                                // Backend accepts null, "", or "N/A" for accessories and normalizes all to null
+                                // Database stores size: null for accessories
+                                const accessorySize = null;
+                                
                                 // Handle hardcoded items first
                                 if (item.type === "Apulet") {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Apulet", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2298,7 +3447,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Integrity Badge", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2306,7 +3455,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Shoulder Badge", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2314,7 +3463,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Cel Bar", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2322,7 +3471,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Beret Logo Pin", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2330,7 +3479,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Belt No 3", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2342,7 +3491,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: "Nametag No 3", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1, 
                                     notes: nametagValue,
                                     status: validStatus
@@ -2353,7 +3502,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 3", 
                                     type: item.type, 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2365,12 +3514,17 @@ export default function UniformPage() {
                                   ? statusValue 
                                   : (statusValue === "Available" ? "Available" : "Missing");
                                 
+                                // CRITICAL: Accessories don't have sizes, use null to match database
+                                // Backend accepts null, "", or "N/A" for accessories and normalizes all to null
+                                // Database stores size: null for accessories
+                                const accessorySize = null;
+                                
                                 // Handle hardcoded items first
                                 if (item.type === "APM Tag") {
                                   itemToSave = { 
                                     category: "Accessories No 4", 
                                     type: "APM Tag", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2378,7 +3532,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 4", 
                                     type: "Belt No 4", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2390,7 +3544,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 4", 
                                     type: "Nametag No 4", 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1, 
                                     notes: nametagValue,
                                     status: validStatus
@@ -2401,7 +3555,7 @@ export default function UniformPage() {
                                   itemToSave = { 
                                     category: "Accessories No 4", 
                                     type: item.type, 
-                                    size: null, 
+                                    size: accessorySize, 
                                     quantity: 1,
                                     status: validStatus
                                   };
@@ -2478,7 +3632,7 @@ export default function UniformPage() {
                                 console.log("Saving item:", itemToSave);
                                 console.log("Has existing uniform:", hasExisting);
                                 console.log("Inventory quantity:", inventoryQty !== null ? inventoryQty : "N/A (Nametag - not checked)");
-                                const success = await handleSubmitUniform([itemToSave], item.type, hasExisting, category);
+                                const success = await handleSubmitUniform([itemToSave], category, hasExisting, category);
                                 if (success) {
                                   console.log("Save successful, refreshing data...");
                                   // Refresh the data after successful save
@@ -2565,9 +3719,25 @@ export default function UniformPage() {
                             }}
                             className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           >
-                            <option value="Missing">Missing</option>
-                            <option value="Available">Available</option>
-                            <option value="Not Available">Not Available</option>
+                            {(() => {
+                              const currentStatus = getCurrentStatus();
+                              const missingKey = getMissingKey(item.category, item.type, item.size ?? "N/A");
+                              const missingCount = itemMissingCount[missingKey];
+                              // Backend fix: missingCount defaults to 0, which is valid but we don't display it
+                              // Only show count when > 0 (after backend has incremented it)
+                              // When missingCount is 0, backend will increment it when status changes to "Missing"
+                              const displayMissing = currentStatus === "Missing" && missingCount !== undefined && missingCount !== null && missingCount > 0
+                                ? `Missing (${missingCount})`
+                                : "Missing";
+                              
+                              return (
+                                <>
+                                  <option value="Missing">{displayMissing}</option>
+                                  <option value="Available">Available</option>
+                                  <option value="Not Available">Not Available</option>
+                                </>
+                              );
+                            })()}
                           </select>
                         </div>
                         {/* Price Display (only for shirts) */}
@@ -2578,7 +3748,19 @@ export default function UniformPage() {
                               {item.price !== undefined && item.price !== null ? (
                                 <span className="text-gray-900 font-medium">RM {item.price.toFixed(2)}</span>
                               ) : (
-                                <span className="text-gray-400 italic">Not set</span>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-amber-600 italic">Not set</span>
+                                  <span title="Price not available. Admin needs to set price in inventory.">
+                                    <svg 
+                                      className="w-4 h-4 text-amber-500" 
+                                      fill="none" 
+                                      stroke="currentColor" 
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                    </svg>
+                                  </span>
+                                </div>
                               )}
                             </div>
                           </div>
