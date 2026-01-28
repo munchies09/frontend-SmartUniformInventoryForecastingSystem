@@ -22,6 +22,47 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Helper to safely extract batch number from API/user data
+  // Handles formats: 9, "9", "Batch 9", "Kompeni 9", "batch 9", "kompeni 9", etc.
+  const getBatchNumberFromValue = (value: string | number | undefined | null): number => {
+    if (typeof value === "number") {
+      return value > 0 ? value : 1;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const match = value.match(/\d+/);
+      if (match) {
+        const num = parseInt(match[0] || "1", 10);
+        return num > 0 ? num : 1;
+      }
+    }
+    return 1; // Default fallback
+  };
+
+  // Initialize batch from auth user (login data) immediately,
+  // so user doesn't have to re-enter it if it's already stored in backend.
+  // This runs as soon as user logs in, before API call completes.
+  useEffect(() => {
+    if (user?.batch) {
+      const initialBatchNumber = getBatchNumberFromValue(user.batch);
+      console.log("🔍 Profile: Initializing batch from login data:", {
+        userBatch: user.batch,
+        extractedNumber: initialBatchNumber,
+        userBatchType: typeof user.batch
+      });
+      setBatchNumber(initialBatchNumber);
+      // Format batch string for display (backend accepts both "Batch X" and "Kompeni X")
+      const batchString = typeof user.batch === "number" 
+        ? `Kompeni ${user.batch}` 
+        : String(user.batch);
+      setFormData((prev) => ({
+        ...prev,
+        batch: batchString,
+      }));
+    } else {
+      console.warn("⚠️ Profile: No batch found in user data from login");
+    }
+  }, [user]);
+
   useEffect(() => {
     fetchProfile();
   }, [user]);
@@ -53,37 +94,74 @@ export default function ProfilePage() {
         console.log("API Response:", data); // Debug log
         if (data.success && data.member) {
           const memberData = data.member;
-          console.log("Fetched profile data:", memberData); // Debug log
-          console.log("Gender from API:", memberData.gender); // Debug log
+          console.log("✅ Profile: Fetched profile data from API:", memberData);
           
-          const batch = memberData.batch || user.batch || "";
-          // Extract number from batch (e.g., "Batch 9" -> 9, "batch 8" -> 8)
-          const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          // Priority: API response > user.batch from login > empty string
+          const rawBatch = memberData.batch ?? user.batch ?? "";
+          const extractedBatchNumber = getBatchNumberFromValue(rawBatch);
+          
+          // Format batch string - preserve backend format if it exists, otherwise use "Kompeni X"
+          let batchString: string;
+          if (memberData.batch) {
+            // Use backend format as-is (could be "Batch X", "Kompeni X", etc.)
+            batchString = typeof memberData.batch === "number" 
+              ? `Kompeni ${memberData.batch}` 
+              : String(memberData.batch);
+          } else if (user.batch) {
+            // Fallback to login data format
+            batchString = typeof user.batch === "number" 
+              ? `Kompeni ${user.batch}` 
+              : String(user.batch);
+          } else {
+            // Last resort: use extracted number
+            batchString = `Kompeni ${extractedBatchNumber}`;
+          }
+          
+          console.log("🔍 Profile: Batch extraction:", {
+            apiBatch: memberData.batch,
+            userBatch: user.batch,
+            rawBatch,
+            extractedNumber: extractedBatchNumber,
+            batchString,
+            batchNumberState: batchNumber
+          });
           
           setFormData({
             sispaId: memberData.sispaId || user.sispaId || "",
             fullName: memberData.name || user.name || "",
-            batch: batch,
+            batch: batchString,
             matricNo: memberData.matricNumber || memberData.matricNo || user.matricNo || "",
             email: memberData.email || user.email || "",
             phone: memberData.phoneNumber || memberData.phone || user.phone || "",
             gender: memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : ""),
           });
-          setBatchNumber(extractedBatchNumber);
           
-          console.log("Set formData gender:", memberData.gender ? (memberData.gender as "Male" | "Female") : (user.gender ? (user.gender as "Male" | "Female") : "")); // Debug log
+          // CRITICAL: Always update batchNumber spinner with extracted value
+          // This ensures the spinner shows the correct number even if API/user.batch format varies
+          setBatchNumber(extractedBatchNumber);
           
           if (memberData.profilePicture || user.profileImage) {
             setProfileImage(memberData.profilePicture || user.profileImage || "");
           }
         } else {
-          // Fallback to user data from context
-          const batch = user.batch || "";
-          const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+          // Fallback to user data from context (API returned success but no member data)
+          console.warn("⚠️ Profile: API returned success but no member data, using login data");
+          const rawBatch = user.batch ?? "";
+          const extractedBatchNumber = getBatchNumberFromValue(rawBatch);
+          const batchString = typeof rawBatch === "number"
+            ? `Kompeni ${rawBatch}`
+            : (rawBatch && String(rawBatch)) || `Kompeni ${extractedBatchNumber}`;
+          
+          console.log("🔍 Profile: Fallback batch from login:", {
+            userBatch: user.batch,
+            extractedNumber: extractedBatchNumber,
+            batchString
+          });
+          
           setFormData({
             sispaId: user.sispaId || "",
             fullName: user.name || "",
-            batch: batch,
+            batch: batchString,
             matricNo: user.matricNo || "",
             email: user.email || "",
             phone: user.phone || "",
@@ -95,35 +173,59 @@ export default function ProfilePage() {
           }
         }
       } else {
-        // Fallback to user data from context
-        const batch = user.batch || "";
-        const extractedBatchNumber = batch.match(/\d+/)?.[0] ? parseInt(batch.match(/\d+/)?.[0] || "1", 10) : 1;
+        // Fallback to user data from context (API request failed)
+        console.warn("⚠️ Profile: API request failed, using login data. Status:", res.status);
+        const rawBatch = user.batch ?? "";
+        const extractedBatchNumber = getBatchNumberFromValue(rawBatch);
+        const batchString = typeof rawBatch === "number"
+          ? `Kompeni ${rawBatch}`
+          : (rawBatch && String(rawBatch)) || `Kompeni ${extractedBatchNumber}`;
+        
+        console.log("🔍 Profile: Fallback batch from login (API failed):", {
+          userBatch: user.batch,
+          extractedNumber: extractedBatchNumber,
+          batchString
+        });
+        
         setFormData({
           sispaId: user.sispaId || "",
           fullName: user.name || "",
-          batch: batch,
+          batch: batchString,
           matricNo: user.matricNo || "",
           email: user.email || "",
           phone: user.phone || "",
           gender: (user.gender as "Male" | "Female") || "",
         });
-        setKompeniNumber(batchNumber);
+        setBatchNumber(extractedBatchNumber);
         if (user.profileImage) {
           setProfileImage(user.profileImage);
         }
       }
     } catch (error) {
-      console.error("Error fetching profile:", error);
-      // Fallback to user data from context
+      console.error("❌ Profile: Error fetching profile:", error);
+      // Fallback to user data from context (network/parse error)
+      const rawBatch = user.batch ?? "";
+      const extractedBatchNumber = getBatchNumberFromValue(rawBatch);
+      const batchString = typeof rawBatch === "number"
+        ? `Kompeni ${rawBatch}`
+        : (rawBatch && String(rawBatch)) || `Kompeni ${extractedBatchNumber}`;
+
+      console.log("🔍 Profile: Fallback batch from login (error):", {
+        userBatch: user.batch,
+        extractedNumber: extractedBatchNumber,
+        batchString
+      });
+
       setFormData({
         sispaId: user.sispaId || "",
         fullName: user.name || "",
-        batch: user.batch || "",
+        batch: batchString,
         matricNo: user.matricNo || "",
         email: user.email || "",
         phone: user.phone || "",
         gender: (user.gender as "Male" | "Female") || "",
       });
+      setBatchNumber(extractedBatchNumber);
       if (user.profileImage) {
         setProfileImage(user.profileImage);
       }
@@ -238,11 +340,11 @@ export default function ProfilePage() {
       
       // Note: sispaId cannot be changed via updateOwnProfile, so we don't send it in payload
       // Backend expects: matricNumber, phoneNumber, profilePicture, gender (not matricNo, phone, profileImage)
-      // Format batch as "Batch {number}"
+      // Format batch as "Kompeni {number}" (backend normalizes this format)
       const payload = {
         name: formData.fullName.trim(),
         email: formData.email.trim(),
-        batch: `Batch ${batchNumber}`,
+        batch: `Kompeni ${batchNumber}`,
         matricNumber: formData.matricNo?.trim() || "", // Backend expects matricNumber
         phoneNumber: formData.phone?.trim() || "", // Backend expects phoneNumber
         profilePicture: profileImage || "", // Backend expects profilePicture

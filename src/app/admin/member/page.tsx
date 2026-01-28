@@ -1104,7 +1104,14 @@ export default function MemberPage() {
       ) : (
         <div className="space-y-4">
           {Object.entries(filteredMembersByBatch)
-            .sort(([a], [b]) => a.localeCompare(b))
+            // Sort batches by numeric value in descending order (e.g. Batch 11, Batch 10, Batch 9, Batch 8)
+            .sort(([a], [b]) => {
+              const getBatchNumber = (batch: string) => {
+                const match = batch.match(/\d+/);
+                return match ? parseInt(match[0], 10) : 0;
+              };
+              return getBatchNumber(b) - getBatchNumber(a);
+            })
             .map(([batch, batchMembers]) => (
               <div
                 key={batch}

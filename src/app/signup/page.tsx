@@ -65,26 +65,36 @@ export default function SignupPage() {
       return;
     }
 
-    // Validate batch
-    if (!form.batch || isNaN(Number(form.batch)) || Number(form.batch) <= 0) {
-      Swal.fire({
-        icon: "error",
-        title: "Validation Error",
-        text: "Please select a valid batch number.",
-        confirmButtonColor: "#1d4ed8",
-      });
-      setLoading(false);
-      return;
+    // Batch is now OPTIONAL - only validate if user provided a value
+    // If batch is provided, validate it's a valid number
+    let batchValue: number | undefined = undefined;
+    if (form.batch && form.batch.trim() !== "") {
+      const batchNum = Number(form.batch);
+      if (isNaN(batchNum) || batchNum <= 0) {
+        Swal.fire({
+          icon: "error",
+          title: "Validation Error",
+          text: "Please enter a valid batch number (or leave it empty to set later in profile).",
+          confirmButtonColor: "#1d4ed8",
+        });
+        setLoading(false);
+        return;
+      }
+      batchValue = batchNum;
     }
 
     try {
-      const payload = {
+      const payload: any = {
         sispaId: normalizedSispaId,
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
-        batch: Number(form.batch),
         password: form.password,
       };
+      
+      // Only include batch if user provided a value
+      if (batchValue !== undefined) {
+        payload.batch = batchValue;
+      }
 
       console.log('=== SIGNUP REQUEST ===');
       console.log('URL:', 'http://localhost:5000/api/members/signup');
@@ -227,15 +237,14 @@ export default function SignupPage() {
               className="w-full border rounded-md p-2 mb-3" 
             />
 
-            <label className="block font-medium">Batch <span className="text-red-500">*</span></label>
+            <label className="block font-medium">Batch</label>
             <input 
               name="batch" 
               type="number" 
               value={form.batch}
               onChange={handleChange} 
-              required 
               min="1"
-              placeholder="Select batch number"
+              placeholder="Enter batch number"
               className="w-full border rounded-md p-2 mb-3" 
             />
 

@@ -1696,11 +1696,11 @@ export default function UniformPage() {
             oldItems: oldItemsToRestore // Restore old items that had status === "Available"
           };
           
-          console.log("📤 Sending deduction request to: http://localhost:5000/api/uniforms/deduct");
+          console.log("📤 Sending deduction request to: http://localhost:5000/api/inventory/deduct");
           console.log("📤 Deduction payload:", JSON.stringify(deductionPayload, null, 2));
           
           try {
-            const deductRes = await fetch("http://localhost:5000/api/uniforms/deduct", {
+            const deductRes = await fetch("http://localhost:5000/api/inventory/deduct", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -3073,6 +3073,18 @@ export default function UniformPage() {
 
                 const handleStatusChange = (value: string) => {
                   const category = item.category;
+                  const statusKey = `${category}-${item.type}`;
+
+                  // If user selects placeholder (empty), clear stored status so dropdown goes back to "Select Status"
+                  if (!value) {
+                    setItemStatus(prev => {
+                      const updated = { ...prev };
+                      delete updated[statusKey];
+                      return updated;
+                    });
+                    return;
+                  }
+
                   const statusValue = value as "Available" | "Missing" | "Not Available";
                   
                   // Status is independent of size - user can set status to indicate "no planning"
@@ -3176,10 +3188,11 @@ export default function UniformPage() {
                 // even if size is selected (to indicate "no planning" like in Excel)
                 const getCurrentStatus = () => {
                   if (isAccessory) {
-                    // CRITICAL: For all accessories, check itemStatus first (from API)
+                    // CRITICAL: For all accessories, check itemStatus first (from API or user selection)
                     const statusKey = `${item.category}-${item.type}`;
-                    if (itemStatus[statusKey]) {
-                      return itemStatus[statusKey];
+                    const storedStatus = itemStatus[statusKey];
+                    if (storedStatus) {
+                      return storedStatus;
                     }
                     
                     if (isNametag) {
@@ -3189,11 +3202,43 @@ export default function UniformPage() {
                       if (nametagValue && nametagValue.trim() !== "") {
                         return "Available";
                       }
-                      // Otherwise default to "Missing"
-                      return "Missing";
+                      // No status chosen and no name yet → show placeholder
+                      return "";
                     }
-                    // For other accessories, fall back to currentValue (based on boolean)
-                    return currentValue;
+
+                    // For other accessories, use ownership flag to determine default:
+                    // - If user doesn't own it yet → no status selected (show placeholder)
+                    // - If user owns it and no status set yet → default to "Available"
+                    let hasOwnership = false;
+                    if (item.category === "Accessories No 3") {
+                      if (item.type === "Apulet") {
+                        hasOwnership = !!(formDataNo3?.accessories?.apulet ?? uniformNo3?.accessories?.apulet);
+                      } else if (item.type.includes("Integrity Badge")) {
+                        hasOwnership = !!(formDataNo3?.accessories?.integrityBadge ?? uniformNo3?.accessories?.integrityBadge);
+                      } else if (item.type.includes("Shoulder Badge")) {
+                        hasOwnership = !!(formDataNo3?.accessories?.shoulderBadge ?? uniformNo3?.accessories?.shoulderBadge);
+                      } else if (item.type.includes("Cel Bar")) {
+                        hasOwnership = !!(formDataNo3?.accessories?.celBar ?? uniformNo3?.accessories?.celBar);
+                      } else if (item.type.includes("Beret Logo") || item.type.includes("Beret Logo Pin")) {
+                        hasOwnership = !!(formDataNo3?.accessories?.beretLogoPin ?? uniformNo3?.accessories?.beretLogoPin);
+                      } else if (item.type.includes("Belt No 3")) {
+                        hasOwnership = !!(formDataNo3?.accessories?.beltNo3 ?? uniformNo3?.accessories?.beltNo3);
+                      }
+                    } else if (item.category === "Accessories No 4") {
+                      if (item.type.includes("APM Tag")) {
+                        hasOwnership = !!(formDataNo4?.accessories?.apmTag ?? uniformNo4?.accessories?.apmTag);
+                      } else if (item.type.includes("Belt No 4")) {
+                        hasOwnership = !!(formDataNo4?.accessories?.beltNo4 ?? uniformNo4?.accessories?.beltNo4);
+                      }
+                    }
+
+                    if (!hasOwnership) {
+                      // User hasn't indicated they own this accessory and hasn't set a status → placeholder
+                      return "";
+                    }
+
+                    // User owns the accessory but no explicit status yet → default to "Available"
+                    return "Available";
                   }
                   
                   // For items with sizes, check if status was manually set
@@ -3202,9 +3247,15 @@ export default function UniformPage() {
                     return itemStatus[statusKey];
                   }
                   
-                  // Default: if size exists, show "Available", otherwise "Missing"
-                  // But user can change it to "Not Available" to indicate "no planning"
-                  return currentValue && currentValue.trim() !== "" ? "Available" : "Missing";
+                  // Default behaviour when no explicit status is set for sized items:
+                  // - If no size selected AND no status set yet -> return empty string so the dropdown
+                  //   shows a "Select Status" placeholder.
+                  // - If a size exists (currentValue not empty) and no status set -> default to "Available".
+                  if (!currentValue || currentValue.trim() === "") {
+                    return "";
+                  }
+                  
+                  return "Available";
                 };
 
                 return (
@@ -3708,37 +3759,42 @@ export default function UniformPage() {
                         {/* Status Dropdown */}
                         <div className={!isAccessory ? "flex-1 min-w-[100px] max-w-[130px]" : "flex-1 min-w-[150px] max-w-[200px]"}>
                           <label className="block text-xs text-gray-600 mb-1">Status</label>
-                          <select
-                            value={getCurrentStatus()}
-                            onChange={(e) => {
-                              handleStatusChange(e.target.value);
-                              // If status is set to "Not Available" or "Missing" for nametag, clear the name
-                              if (isNametag && (e.target.value === "Not Available" || e.target.value === "Missing")) {
-                                handleNametagChange("");
-                              }
-                            }}
-                            className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          >
-                            {(() => {
-                              const currentStatus = getCurrentStatus();
-                              const missingKey = getMissingKey(item.category, item.type, item.size ?? "N/A");
-                              const missingCount = itemMissingCount[missingKey];
-                              // Backend fix: missingCount defaults to 0, which is valid but we don't display it
-                              // Only show count when > 0 (after backend has incremented it)
-                              // When missingCount is 0, backend will increment it when status changes to "Missing"
-                              const displayMissing = currentStatus === "Missing" && missingCount !== undefined && missingCount !== null && missingCount > 0
+                          {(() => {
+                            const currentStatus = getCurrentStatus();
+                            const selectValue = currentStatus || "";
+                            const missingKey = getMissingKey(item.category, item.type, item.size ?? "N/A");
+                            const missingCount = itemMissingCount[missingKey];
+                            // Backend fix: missingCount defaults to 0, which is valid but we don't display it
+                            // Only show count when > 0 (after backend has incremented it)
+                            // When missingCount is 0, backend will increment it when status changes to "Missing"
+                            const displayMissing =
+                              currentStatus === "Missing" &&
+                              missingCount !== undefined &&
+                              missingCount !== null &&
+                              missingCount > 0
                                 ? `Missing (${missingCount})`
                                 : "Missing";
-                              
-                              return (
-                                <>
-                                  <option value="Missing">{displayMissing}</option>
-                                  <option value="Available">Available</option>
-                                  <option value="Not Available">Not Available</option>
-                                </>
-                              );
-                            })()}
-                          </select>
+
+                            return (
+                              <select
+                                value={selectValue}
+                                onChange={(e) => {
+                                  handleStatusChange(e.target.value);
+                                  // If status is set to "Not Available" or "Missing" for nametag, clear the name
+                                  if (isNametag && (e.target.value === "Not Available" || e.target.value === "Missing")) {
+                                    handleNametagChange("");
+                                  }
+                                }}
+                                className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              >
+                                {/* Placeholder shown when no status has been chosen yet */}
+                                <option value="">Select Status</option>
+                                <option value="Missing">{displayMissing}</option>
+                                <option value="Available">Available</option>
+                                <option value="Not Available">Not Available</option>
+                              </select>
+                            );
+                          })()}
                         </div>
                         {/* Price Display (only for shirts) */}
                         {item.category === "Shirt" && (
